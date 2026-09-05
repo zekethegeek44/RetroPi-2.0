@@ -26,7 +26,7 @@ echo "==> Verifying $IMG_FILE"
 
 winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 
-docker run --rm --privileged \
+docker run --rm -i --privileged \
     -v "$(winpath "$IMG_DIR"):/d:ro" \
     alpine sh -s "$IMG_FILE" <<'INNER'
 set -eu
@@ -43,7 +43,10 @@ mount -o ro,loop,offset=$((ROOT_START * 512)) "$IMG" /mnt/r
 
 fail=0
 chk() { # label, path
-    if [ -e "/mnt/r$2" ]; then printf '  ok      %s\n' "$1"
+    # -L as well as -e: systemd *.wants entries are symlinks whose
+    # absolute targets resolve against the container root, not the
+    # mount, so -e alone wrongly reports them as missing.
+    if [ -e "/mnt/r$2" ] || [ -L "/mnt/r$2" ]; then printf '  ok      %s\n' "$1"
     else printf '  MISSING %s  (%s)\n' "$1" "$2"; fail=$((fail+1)); fi
 }
 
