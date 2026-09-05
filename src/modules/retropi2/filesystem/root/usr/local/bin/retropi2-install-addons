@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""
+Retro Pi 2.0 -- one-time Kodi addon installer.
+
+Runs on the Pi at first boot, because it needs the network and Kodi
+addons cannot be resolved at image build time.
+
+Installs:
+  * Arctic Horizon 2  -- the dashboard skin (widget rows, Continue Watching)
+  * Advanced Kodi Launcher (+ RetroArch plugin) -- games with box art
+  * Jellyfin for Kodi -- media server client
+
+Dependencies come from Kodi's official Omega repository where possible;
+the two that are not there are pulled from their own GitHub repos.
+
+Everything is best-effort by design: if a repo has moved or the network
+is down we log it and let Kodi start on the stock Estuary skin, rather
+than leaving a black screen on the TV.
+"""
+
+import gzip
+import io
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
+
+HOME = os.environ.get("HOME", "/home/pi")
+ADDONS = os.path.join(HOME, ".kodi", "addons")
+USERDATA = os.path.join(HOME, ".kodi", "userdata")
+DONE_FLAG = "/var/lib/retropi2/addons-done"
+
+KODI_REPO = "https://mirrors.kodi.tv/addons/omega"
+JM_ZIPS = ("https://raw.githubusercontent.com/jurialmunkey/"
+           "repository.jurialmunkey/master/omega/zips")
+
+SKIN_ID = "skin.arctic.horizon.2"
+
+# Pseudo-addons that are part of Kodi itself and are never installable.
+BUILTIN = re.compile(r"^(xbmc\.|kodi\.|metadata\.common\.)")
+
+TIMEOUT = 60
+
+
+def log(msg):
+    print("[retropi2-addons] " + str(msg), flush=True)
+
+
+def fetch(url, timeout=TIMEOUT):
+    req = urllib.request.Request(url, headers={"User-Agent": "RetroPi2/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def load_official_index():
+    """Map addon id -> version, from Kodi's official Omega repository."""
+    log("fetching official Kodi addon index...")
+    raw = fetch(KODI_REPO + "/addons.xml.gz", timeout=180)
+    xml = gzip.decompress(raw).decode("utf-8", "replace")
+    idx = {}
+    for m in re.finditer(r'<addon id="([^"]+)"[^>]*version="([^"]+)"', xml):
+        idx.setdefault(m.group(1), m.group(2))
+    log("  %d addons in index" % len(idx))
+    return idx
+
+
+def already_installed(addon_id):
+    return os.path.isdir(os.path.join(ADDONS, addon_id))
+
+
+def extract_zip(data, addon_id, strip_root=False):
+    """Unpack an addon zip into the Kodi addons directory."""
+    os.makedirs(ADDONS, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        if not strip_root:
+            z.extractall(ADDONS)
+            return
+        # GitHub source zips wrap everything in a "<repo>-<branch>/" folder.
+        tmp = tempfile.mkdtemp()
+        try:
+            z.extractall(tmp)
+            dirs = [e for e in os.listdir(tmp)
+                    if os.path.isdir(os.path.join(tmp, e))]
+            if len(dirs) != 1:
+                raise RuntimeError("unexpected zip layout: %r" % dirs)
+            dest = os.path.join(ADDONS, addon_id)
+            shutil.rmtree(dest, ignore_errors=True)
+            shutil.move(os.path.join(tmp, dirs[0]), dest)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def addon_requires(addon_id):
+    """Dependency ids declared in an installed addon's addon.xml."""
+    path = os.path.join(ADDONS, addon_id, "addon.xml")
+    if not os.path.isfile(path):
+        return []
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        log("  ! cannot parse addon.xml for %s: %s" % (addon_id, exc))
+        return []
+    out = []
+    for imp in root.findall("./requires/import"):
+        dep = imp.get("addon")
+        if dep and not BUILTIN.match(dep):
+            out.append(dep)
+    return out
+
+
+def resolve_deps(addon_id, index, depth=0):
+    if depth > 8:                      # guard against dependency cycles
+        return
+    for dep in addon_requires(addon_id):
+        if not already_installed(dep):
+            install_official(dep, index, depth + 1)
+
+
+def install_official(addon_id, index, depth=0):
+    """Install from the official repo, then its dependencies, recursively."""
+    pad = "  " * (depth + 1)
+    if already_installed(addon_id):
+        return True
+    if addon_id not in index:
+        log("%s! %s is not in the official repo" % (pad, addon_id))
+        return False
+    ver = index[addon_id]
+    url = "%s/%s/%s-%s.zip" % (KODI_REPO, addon_id, addon_id, ver)
+    try:
+        log("%s+ %s %s" % (pad, addon_id, ver))
+        extract_zip(fetch(url), addon_id)
+    except Exception as exc:
+        log("%s! failed %s: %s" % (pad, addon_id, exc))
+        return False
+    resolve_deps(addon_id, index, depth)
+    return True
+
+
+def install_github(repo, branch, addon_id, index):
+    if already_installed(addon_id):
+        return True
+    url = "https://codeload.github.com/%s/zip/refs/heads/%s" % (repo, branch)
+    try:
+        log("+ %s (github %s@%s)" % (addon_id, repo, branch))
+        extract_zip(fetch(url, timeout=180), addon_id, strip_root=True)
+    except Exception as exc:
+        log("! failed %s: %s" % (addon_id, exc))
+        return False
+    resolve_deps(addon_id, index)
+    return True
+
+
+def install_url(url, addon_id, index, strip_root=False):
+    if already_installed(addon_id):
+        return True
+    try:
+        log("+ %s (%s)" % (addon_id, url.rsplit("/", 1)[-1]))
+        extract_zip(fetch(url, timeout=180), addon_id, strip_root=strip_root)
+    except Exception as exc:
+        log("! failed %s: %s" % (addon_id, exc))
+        return False
+    resolve_deps(addon_id, index)
+    return True
+
+
+def install_jm_font(index):
+    """resource.font.robotocjksc is not carried by the official repo."""
+    try:
+        xml = fetch(JM_ZIPS + "/addons.xml").decode("utf-8", "replace")
+    except Exception as exc:
+        log("! robotocjksc lookup failed: %s" % exc)
+        return False
+    m = re.search(r'addon id="(resource\.font\.robotocjksc)"'
+                  r'[^>]*version="([^"]+)"', xml)
+    if not m:
+        log("! robotocjksc not listed in the jurialmunkey repo")
+        return False
+    aid, ver = m.group(1), m.group(2)
+    return install_url("%s/%s/%s-%s.zip" % (JM_ZIPS, aid, aid, ver),
+                       aid, index)
+
+
+def latest_github_zip(repo):
+    """browser_download_url of the newest .zip asset on a GitHub release."""
+    data = fetch("https://api.github.com/repos/%s/releases/latest" % repo)
+    rel = json.loads(data.decode("utf-8", "replace"))
+    for asset in rel.get("assets", []):
+        if asset.get("name", "").endswith(".zip"):
+            return asset["browser_download_url"]
+    return None
+
+
+def install_akl(index):
+    """Advanced Kodi Launcher -- games with artwork, launched via RetroArch."""
+    ok = True
+    try:
+        url = latest_github_zip("chrisism/plugin.program.akl")
+        if url:
+            ok = install_url(url, "plugin.program.akl", index) and ok
+        else:
+            log("! no zip asset on the latest AKL release")
+            ok = False
+    except Exception as exc:
+        log("! AKL install failed: %s" % exc)
+        ok = False
+
+    ok = install_github("chrisism/script.akl.retroarchlauncher", "master",
+                        "script.akl.retroarchlauncher", index) and ok
+    return ok
+
+
+def install_jellyfin(index):
+    """Jellyfin for Kodi, from the Jellyfin project's own repository."""
+    base = "https://repo.jellyfin.org/releases/client/kodi/py3"
+    try:
+        listing = fetch(base + "/addons.xml").decode("utf-8", "replace")
+        m = re.search(r'addon id="(plugin\.video\.jellyfin)"'
+                      r'[^>]*version="([^"]+)"', listing)
+        if not m:
+            log("! jellyfin addon not listed in its repo")
+            return False
+        aid, ver = m.group(1), m.group(2)
+        return install_url("%s/%s/%s-%s.zip" % (base, aid, aid, ver),
+                           aid, index)
+    except Exception as exc:
+        log("! jellyfin install failed: %s" % exc)
+        return False
+
+
+def set_skin(skin_id):
+    """Pre-seed the skin choice.
+
+    Safe to set optimistically: Kodi falls back to Estuary by itself if a
+    skin fails to load.
+    """
+    os.makedirs(USERDATA, exist_ok=True)
+    path = os.path.join(USERDATA, "guisettings.xml")
+    if os.path.exists(path):
+        log("guisettings.xml already exists; leaving the skin choice alone")
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('<settings version="2">\n'
+                '    <setting id="lookandfeel.skin">%s</setting>\n'
+                '</settings>\n' % skin_id)
+    log("skin set to %s" % skin_id)
+
+
+def main():
+    os.makedirs(ADDONS, exist_ok=True)
+
+    try:
+        index = load_official_index()
+    except Exception as exc:
+        log("could not reach the Kodi repository (%s)" % exc)
+        log("Kodi will start on the default skin. Re-run later with:")
+        log("  sudo systemctl start retropi2-addons")
+        return 1
+
+    results = {}
+
+    # The skin, plus the two dependencies the official repo lacks.
+    results["texturemaker"] = install_github(
+        "jurialmunkey/script.texturemaker", "main",
+        "script.texturemaker", index)
+    results["robotocjksc"] = install_jm_font(index)
+    results["skin"] = install_github(
+        "jurialmunkey/skin.arctic.horizon.2", "omega", SKIN_ID, index)
+
+    # Games and media.
+    results["akl"] = install_akl(index)
+    results["jellyfin"] = install_jellyfin(index)
+
+    if results.get("skin") and already_installed(SKIN_ID):
+        set_skin(SKIN_ID)
+    else:
+        log("skin unavailable -- Kodi will use the stock Estuary skin")
+
+    os.makedirs(os.path.dirname(DONE_FLAG), exist_ok=True)
+    with open(DONE_FLAG, "w", encoding="utf-8") as f:
+        for key in sorted(results):
+            f.write("%s=%s\n" % (key, "ok" if results[key] else "failed"))
+
+    log("summary: " + ", ".join(
+        "%s=%s" % (k, "ok" if results[k] else "FAILED")
+        for k in sorted(results)))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:        # never block the boot
+        log("unexpected error: %s" % exc)
+        sys.exit(1)

@@ -1,0 +1,23 @@
+[Unit]
+Description=Kodi Media Center (GBM, no desktop)
+After=systemd-user-sessions.service network-online.target sound.target retropi2-addons.service
+Wants=network-online.target
+
+[Service]
+User=pi
+Group=pi
+# GBM needs direct GPU access; input needs evdev. Without these Kodi
+# starts with no picture and no controller.
+SupplementaryGroups=video render input audio tty dialout plugdev
+Type=simple
+Environment=HOME=/home/pi
+ExecStart=/usr/bin/kodi-standalone
+Restart=on-failure
+RestartSec=5
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=Retro Pi 2.0 first-boot setup wizard
+# Runs on the console before Kodi takes over the screen.
+After=systemd-user-sessions.service
+Before=retropi2-addons.service retropi2-kodi.service
+ConditionPathExists=!/boot/firmware/retropi2-firstboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/retropi2-firstboot
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+# The wizard is optional -- never let it wedge the boot.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

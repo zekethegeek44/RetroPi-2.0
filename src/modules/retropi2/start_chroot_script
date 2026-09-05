@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# ============================================================
+#  Retro Pi 2.0 — main build script
+#  Runs INSIDE the arm64 chroot against Raspberry Pi OS Trixie.
+#
+#  Result: boots straight into Kodi 21 as the shell, with
+#  RetroArch behind it for games.
+# ============================================================
+set -x
+set -e
+
+export LC_ALL=C
+export DEBIAN_FRONTEND=noninteractive
+
+source /common.sh
+install_cleanup_trap
+
+[ -d /filesystem/root ]    && unpack /filesystem/root /
+[ -d /filesystem/boot ]    && unpack /filesystem/boot /boot/firmware
+[ -d /filesystem/home/pi ] && unpack /filesystem/home/pi "/home/$RP2_USER" "$RP2_USER"
+true
+
+# Trixie mirrors are current -- no archive rewriting needed, unlike the
+# old Buster base.
+apt-get update
+
+# ------------------------------------------------------------
+# 1. Packages
+# ------------------------------------------------------------
+if [ "$RP2_KODI" == "yes" ]; then
+    echo "[retropi2] Installing Kodi"
+    # Debian has no kodi-gbm / kodi-standalone packages -- those are
+    # Ubuntu PPA names. The plain "kodi" package ships
+    # /usr/bin/kodi-standalone, and kodi-bin links against libgbm and
+    # libdrm, so Kodi selects GBM by itself when no X or Wayland is
+    # running. Verified against the Trixie package index.
+    apt-get install -y --no-install-recommends \
+        kodi kodi-bin kodi-data kodi-repository-kodi \
+        kodi-eventclients-kodi-send
+fi
+
+if [ "$RP2_RETROARCH" == "yes" ]; then
+    echo "[retropi2] Installing RetroArch and cores"
+    apt-get install -y --no-install-recommends \
+        retroarch libretro-core-info
+    # Cores are individual packages; skip any that vanish from the
+    # archive rather than failing the whole build.
+    for core in $RP2_CORES; do
+        apt-get install -y --no-install-recommends "$core" \
+            || echo "[retropi2] WARNING: core '$core' unavailable, skipping"
+    done
+fi
+
+# Bits the wizard and addon installer rely on.
+apt-get install -y --no-install-recommends \
+    whiptail rsync unzip ca-certificates cifs-utils nfs-common
+
+# ------------------------------------------------------------
+# 2. Media and ROM directories
+# ------------------------------------------------------------
+echo "[retropi2] Creating media and ROM directories"
+mkdir -p "$RP2_ROMS_DIR" "$RP2_MEDIA_DIR"/{movies,tv}
+for sys in nes snes megadrive gb gba n64 psx nds atari2600; do
+    mkdir -p "$RP2_ROMS_DIR/$sys"
+done
+chown -R "$RP2_USER":"$RP2_USER" "$RP2_ROMS_DIR" "$RP2_MEDIA_DIR"
+
+# ------------------------------------------------------------
+# 3. Kodi as the shell
+# ------------------------------------------------------------
+if [ "$RP2_KODI" == "yes" ]; then
+    echo "[retropi2] Configuring Kodi to run as the shell"
+
+    # Kodi on GBM talks straight to the GPU and reads the gamepad via
+    # evdev, so the user needs these groups or it starts with no video
+    # and no input.
+    usermod -aG video,render,input,audio,tty,dialout,plugdev "$RP2_USER"
+
+    systemctl set-default multi-user.target
+    systemctl enable retropi2-kodi.service
+
+    # Raspberry Pi OS otherwise shows its own first-run user-creation
+    # wizard, which would sit in front of Kodi forever on a TV.
+    systemctl disable userconfig.service 2>/dev/null || true
+    systemctl mask    userconfig.service 2>/dev/null || true
+    rm -f /etc/xdg/autostart/piwiz.desktop
+    # Mark the setup wizard as already done.
+    rm -f /boot/firmware/firstrun.sh /boot/firmware/userconf.txt || true
+
+    mkdir -p "/home/$RP2_USER/.kodi/userdata"
+    chown -R "$RP2_USER":"$RP2_USER" "/home/$RP2_USER/.kodi"
+fi
+
+# ------------------------------------------------------------
+# 4. Fast boot
+# ------------------------------------------------------------
+if [ "$RP2_FAST_BOOT" == "yes" ]; then
+    echo "[retropi2] Applying fast-boot tuning"
+    for svc in triggerhappy.service man-db.timer \
+               apt-daily.timer apt-daily-upgrade.timer \
+               apt-daily.service apt-daily-upgrade.service \
+               bluetooth.service ModemManager.service; do
+        systemctl disable "$svc" 2>/dev/null || true
+    done
+    systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
+    systemctl mask    NetworkManager-wait-online.service 2>/dev/null || true
+
+    mkdir -p /etc/systemd/system.conf.d
+    cat > /etc/systemd/system.conf.d/10-retropi2-timeouts.conf <<'EOF'
+[Manager]
+DefaultTimeoutStartSec=15s
+DefaultTimeoutStopSec=10s
+EOF
+
+    CMDLINE=/boot/firmware/cmdline.txt
+    if [ -f "$CMDLINE" ]; then
+        cp "$CMDLINE" "$CMDLINE.retropi2.bak"
+        sed -i 's/\bconsole=tty1\b/console=tty3/' "$CMDLINE"
+        for opt in quiet loglevel=3 logo.nologo vt.global_cursor_default=0; do
+            grep -qw -- "$opt" "$CMDLINE" || sed -i "1s|\$| $opt|" "$CMDLINE"
+        done
+        sed -i 's/  */ /g; s/ *$//' "$CMDLINE"
+    fi
+
+    CONFIGTXT=/boot/firmware/config.txt
+    if [ -f "$CONFIGTXT" ]; then
+        cp "$CONFIGTXT" "$CONFIGTXT.retropi2.bak"
+        cat >> "$CONFIGTXT" <<'EOF'
+
+# ---- Retro Pi 2.0 ----
+disable_splash=1
+boot_delay=0
+# Pi 4 hardware video decode for Kodi; 512M keeps 4K HEVC happy.
+gpu_mem=320
+EOF
+    fi
+fi
+
+# ------------------------------------------------------------
+# 5. First-boot wizard + addon installer
+# ------------------------------------------------------------
+if [ "$RP2_FIRSTBOOT_WIZARD" == "yes" ]; then
+    echo "[retropi2] Installing first-boot wizard"
+    chmod +x /usr/local/bin/retropi2-firstboot
+    systemctl enable retropi2-firstboot.service
+fi
+
+if [ "$RP2_ADDONS" == "yes" ]; then
+    echo "[retropi2] Installing first-boot downloaders"
+    chmod +x /usr/local/bin/retropi2-install-addons
+    chmod +x /usr/local/bin/retropi2-install-cores
+    # The unit runs as pi, so it needs to own its state directory.
+    mkdir -p /var/lib/retropi2
+    chown "$RP2_USER":"$RP2_USER" /var/lib/retropi2
+    systemctl enable retropi2-addons.service
+fi
+
+# ------------------------------------------------------------
+# 6. Cleanup
+# ------------------------------------------------------------
+rm -f "/home/$RP2_USER/.gitkeep" /boot/firmware/.gitkeep /.gitkeep
+apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+echo "[retropi2] Build stage complete."

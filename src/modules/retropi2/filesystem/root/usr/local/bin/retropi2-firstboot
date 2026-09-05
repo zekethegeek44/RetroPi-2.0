@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# ============================================================
+#  Retro Pi 2.0 -- first-boot setup wizard
+#
+#  Runs once, on tty1, before Kodi takes over the screen.
+#  Everything here is optional; "Finish" always works.
+# ============================================================
+
+MARKER="/boot/firmware/retropi2-firstboot-done"
+TITLE="Retro Pi 2.0 - First Time Setup"
+USER_NAME="pi"
+MEDIA_DIR="/home/$USER_NAME/media"
+ROMS_DIR="/home/$USER_NAME/roms"
+
+[ -f "$MARKER" ] && exit 0
+
+export TERM="${TERM:-linux}"
+export NEWT_COLORS='root=,black'
+
+msg()   { whiptail --title "$TITLE" --msgbox "$1" 18 74; }
+yesno() { whiptail --title "$TITLE" --yesno  "$1" 12 74; }
+
+finish() {
+    touch "$MARKER" 2>/dev/null || true
+    clear
+    echo "Starting Kodi..."
+    exit 0
+}
+
+# ---------------- WiFi ----------------
+# Raspberry Pi OS uses NetworkManager since Bookworm, so this is nmcli
+# rather than the old wpa_supplicant.conf editing.
+setup_wifi() {
+    if ! command -v nmcli >/dev/null 2>&1; then
+        msg "Network tools aren't available.\n\nYou can still use a wired network cable."
+        return
+    fi
+
+    whiptail --title "$TITLE" --infobox "Scanning for WiFi networks..." 8 60
+    nmcli device wifi rescan >/dev/null 2>&1
+    sleep 4
+
+    mapfile -t nets < <(
+        nmcli -t -f SSID,SIGNAL device wifi list 2>/dev/null \
+        | awk -F: '$1 != "" { print $2 ":" $1 }' \
+        | sort -t: -k1 -nr \
+        | awk -F: '!seen[$2]++ { print $2 }' \
+        | head -20
+    )
+
+    if [ ${#nets[@]} -eq 0 ]; then
+        msg "No WiFi networks found.\n\nYou can set this up later from Kodi's settings, or plug in a cable."
+        return
+    fi
+
+    local menu=() i=1
+    for n in "${nets[@]}"; do
+        menu+=("$i" "$n")
+        i=$((i + 1))
+    done
+
+    local choice
+    choice=$(whiptail --title "$TITLE" --menu "Pick your WiFi network:" 20 74 10 \
+        "${menu[@]}" 3>&1 1>&2 2>&3) || return
+
+    local ssid="${nets[$((choice - 1))]}"
+    local psk
+    psk=$(whiptail --title "$TITLE" --passwordbox "Password for:\n\n  $ssid" 12 74 \
+        3>&1 1>&2 2>&3) || return
+
+    whiptail --title "$TITLE" --infobox "Connecting to $ssid..." 8 60
+    if [ -n "$psk" ]; then
+        nmcli device wifi connect "$ssid" password "$psk" >/dev/null 2>&1
+    else
+        nmcli device wifi connect "$ssid" >/dev/null 2>&1
+    fi
+    sleep 3
+
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [ -n "$ip" ]; then
+        msg "Connected.\n\nThis box's address is:  $ip\n\nWrite that down - you'll use it to copy games and media over."
+    else
+        msg "Couldn't confirm a connection.\n\nDouble-check the password, or try again later from Kodi's settings."
+    fi
+}
+
+# ---------------- SSH ----------------
+setup_ssh() {
+    if yesno "Enable SSH?\n\nThis lets you log in from your PC to copy files and fix things without unplugging anything.\n\nRecommended: Yes"; then
+        systemctl enable ssh >/dev/null 2>&1
+        systemctl start  ssh >/dev/null 2>&1
+        msg "SSH is on.\n\nUsername: pi\nPassword: raspberry\n\nChange that password if this box is on a shared network:\n  passwd"
+    fi
+}
+
+# ---------------- Timezone ----------------
+setup_timezone() {
+    local tz
+    tz=$(whiptail --title "$TITLE" --menu "Pick your timezone:" 20 74 10 \
+        "America/New_York"    "US Eastern" \
+        "America/Chicago"     "US Central" \
+        "America/Denver"      "US Mountain" \
+        "America/Los_Angeles" "US Pacific" \
+        "America/Anchorage"   "Alaska" \
+        "Pacific/Honolulu"    "Hawaii" \
+        "Europe/London"       "UK" \
+        "UTC"                 "Leave as UTC" \
+        3>&1 1>&2 2>&3) || return
+    timedatectl set-timezone "$tz" 2>/dev/null || \
+        ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
+    msg "Timezone set to $tz."
+}
+
+# ---------------- Media server ----------------
+mount_network_share() {
+    local server share user pass mountpoint
+    server=$(whiptail --title "$TITLE" --inputbox \
+        "Server address\n\nExample:  192.168.1.50" 12 74 3>&1 1>&2 2>&3) || return
+    [ -z "$server" ] && return
+
+    share=$(whiptail --title "$TITLE" --inputbox \
+        "Shared folder name on $server\n\nExample:  Movies" 12 74 3>&1 1>&2 2>&3) || return
+    [ -z "$share" ] && return
+
+    user=$(whiptail --title "$TITLE" --inputbox \
+        "Username for the share\n\nLeave blank if it needs no login." 12 74 \
+        3>&1 1>&2 2>&3) || return
+    pass=""
+    if [ -n "$user" ]; then
+        pass=$(whiptail --title "$TITLE" --passwordbox "Password for $user" 12 74 \
+            3>&1 1>&2 2>&3) || return
+    fi
+
+    mountpoint="$MEDIA_DIR/$share"
+    mkdir -p "$mountpoint"
+
+    # Credentials go in a root-only file rather than into /etc/fstab,
+    # where every user on the box could read them.
+    local credfile="/etc/retropi2-share.cred"
+    local opts="guest,uid=1000,gid=1000,iocharset=utf8,vers=3.0,nofail,x-systemd.automount"
+    if [ -n "$user" ]; then
+        {
+            echo "username=$user"
+            echo "password=$pass"
+        } > "$credfile"
+        chmod 600 "$credfile"
+        opts="credentials=$credfile,uid=1000,gid=1000,iocharset=utf8,vers=3.0,nofail,x-systemd.automount"
+    fi
+
+    whiptail --title "$TITLE" --infobox "Trying to mount //$server/$share ..." 8 60
+    if mount -t cifs "//$server/$share" "$mountpoint" -o "$opts" 2>/dev/null; then
+        # Only make it permanent once we know it actually works.
+        if ! grep -q "$mountpoint" /etc/fstab; then
+            echo "//$server/$share  $mountpoint  cifs  $opts  0  0" >> /etc/fstab
+        fi
+        msg "Mounted.\n\nYour media is at:\n  $mountpoint\n\nIn Kodi, add that folder as a video source and it'll scan your movies and TV."
+    else
+        msg "Couldn't mount //$server/$share.\n\nCheck the address, share name and password.\nYou can also add it from inside Kodi:\n  Settings > Media > Add source"
+    fi
+}
+
+setup_media() {
+    local choice
+    choice=$(whiptail --title "$TITLE" --menu \
+"How do you watch your movies and TV?
+
+Not sure? Pick 'Ask me later' - you can set this up
+inside Kodi at any time." 20 74 6 \
+        "1" "Jellyfin server" \
+        "2" "Plex server" \
+        "3" "A shared folder on a NAS or PC" \
+        "4" "Ask me later" \
+        3>&1 1>&2 2>&3) || return
+
+    case "$choice" in
+        1) msg "Jellyfin.\n\nThe Jellyfin addon is already installed.\n\nIn Kodi:\n  Add-ons > Video add-ons > Jellyfin\n\nIt'll ask for your server address, then sign in.\nYour libraries and 'Continue Watching' come straight across." ;;
+        2) msg "Plex.\n\nInstall the Plex addon inside Kodi:\n  Add-ons > Install from repository >\n  Kodi Add-on repository > Video add-ons > Plex\n\nThen sign in with your Plex account." ;;
+        3) mount_network_share ;;
+        4) msg "No problem.\n\nWhen you're ready, in Kodi:\n  Settings > Media > Library > Add video source\n\nOr re-run this wizard:\n  sudo /usr/local/bin/retropi2-firstboot" ;;
+    esac
+}
+
+# ---------------- Games ----------------
+show_games() {
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$ip" ] && ip="<no network yet>"
+
+    msg "Your games go in:
+  $ROMS_DIR
+
+with one folder per system, for example:
+  $ROMS_DIR/snes
+  $ROMS_DIR/nes
+  $ROMS_DIR/n64
+
+To copy them over from Windows, open Explorer and go to:
+  \\\\$ip\\pi
+
+or use scp from your PC:
+  scp -r snes pi@$ip:~/roms/
+
+Once they're there, open Kodi and go to
+  Add-ons > Advanced Kodi Launcher
+to scan them in and download the box art."
+}
+
+# ---------------- Main ----------------
+whiptail --title "$TITLE" --msgbox "Welcome to Retro Pi 2.0.
+
+This one-time setup gets your network, media and
+games sorted, so you don't have to edit config
+files over SSH later.
+
+Skip anything you like - it can all be changed
+later from inside Kodi." 17 74
+
+while true; do
+    choice=$(whiptail --title "$TITLE" --menu "What would you like to set up?" 20 74 8 \
+        "1" "Connect to WiFi" \
+        "2" "Movies and TV (media server)" \
+        "3" "How do I add games?" \
+        "4" "Enable SSH" \
+        "5" "Set timezone" \
+        "6" "Finish and start Kodi" \
+        3>&1 1>&2 2>&3) || finish
+
+    case "$choice" in
+        1) setup_wifi ;;
+        2) setup_media ;;
+        3) show_games ;;
+        4) setup_ssh ;;
+        5) setup_timezone ;;
+        6) finish ;;
+    esac
+done

@@ -1,0 +1,31 @@
+# armhf build environment for the shipping EmulationStation binary.
+#
+# Built FROM the RetroPie image's own root filesystem (see
+# make-build-rootfs.sh), because -DRPI=On links bcm_host / vchiq_arm
+# out of /opt/vc -- Raspberry Pi firmware libraries that no plain
+# Debian armhf image provides.
+FROM retropie-rootfs:buster-armhf
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LC_ALL=C
+
+# Raspbian Buster is EOL and raspbian.raspberrypi.org now 404s. Verified
+# 2026-09-05: legacy.raspbian.org is the only live Raspbian Buster mirror,
+# while archive.raspberrypi.org (the Foundation's own repo) still serves
+# buster. Rewrite both deterministically rather than trusting a fallback.
+RUN set -eux; \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99no-check-valid; \
+    echo 'deb http://legacy.raspbian.org/raspbian buster main contrib non-free rpi' > /etc/apt/sources.list; \
+    echo 'deb http://archive.raspberrypi.org/debian buster main' > /etc/apt/sources.list.d/raspi.list; \
+    apt-get update
+
+# libraspberrypi-dev is usually already present in the RetroPie image;
+# it's listed so the build fails loudly here rather than at link time.
+RUN apt-get install -y --no-install-recommends \
+        build-essential cmake pkg-config git ca-certificates \
+        libsdl2-dev libfreeimage-dev libfreetype6-dev libcurl4-openssl-dev \
+        rapidjson-dev libasound2-dev libvlc-dev libvlccore-dev \
+        libraspberrypi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src

@@ -1,0 +1,14 @@
+# Build artifacts — these are huge, never commit
+src/image/*
+!src/image/.gitkeep
+src/workspace/
+*.img
+*.img.gz
+*.img.xz
+*.zip
+build/CustomPiOS/
+dist/
+
+# Compiled EmulationStation binary (~20 MB, rebuildable)
+src/modules/retropi2/filesystem/prebuilt/
+src/build.log

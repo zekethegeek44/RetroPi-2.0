@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Feature switches for Retro Pi 2.0. Set any to "no" to leave that
+# part of the image alone.
+
+export RP2_FAST_BOOT="yes"        # strip services, quiet boot
+export RP2_FIRSTBOOT_WIZARD="yes" # WiFi / media server / ROM help on first boot
+export RP2_KODI="yes"             # Kodi 21 as the shell
+export RP2_RETROARCH="yes"        # RetroArch + emulator cores
+export RP2_ADDONS="yes"           # Kodi skin, game launcher, Jellyfin
+
+export RP2_HOSTNAME="retropi2"
+export RP2_USER="pi"
+
+# Where media and games live. Kept on their own paths so they're easy
+# to point at an external drive later.
+export RP2_ROMS_DIR="/home/pi/roms"
+export RP2_MEDIA_DIR="/home/pi/media"
+
+# Only these libretro cores genuinely exist as Debian arm64 packages
+# (verified against the Trixie index -- most libretro-* names people
+# expect do NOT). They give a working baseline with no network; the
+# full set (Genesis, N64, PS1, arcade, PSP...) is pulled from the
+# libretro buildbot on first boot by retropi2-install-cores.
+export RP2_CORES="libretro-nestopia libretro-gambatte libretro-mgba \
+libretro-desmume libretro-bsnes-mercury-accuracy"

@@ -1,0 +1,413 @@
+diff --git a/es-app/src/FileFilterIndex.cpp b/es-app/src/FileFilterIndex.cpp
+index 4ddf6b8..cd29c1a 100644
+--- a/es-app/src/FileFilterIndex.cpp
++++ b/es-app/src/FileFilterIndex.cpp
+@@ -10,7 +10,7 @@
+ #define INCLUDE_UNKNOWN false;
+ 
+ FileFilterIndex::FileFilterIndex()
+-	: filterByFavorites(false), filterByGenre(false), filterByHidden(false), filterByKidGame(false), filterByPlayers(false), filterByPubDev(false), filterByRatings(false)
++	: filterByName(false), filterByFavorites(false), filterByGenre(false), filterByHidden(false), filterByKidGame(false), filterByPlayers(false), filterByPubDev(false), filterByRatings(false)
+ {
+ 	clearAllFilters();
+ 	FilterDataDecl filterDecls[] = {
+@@ -236,6 +236,8 @@ void FileFilterIndex::clearAllFilters()
+ 		*(filterData.filteredByRef) = false;
+ 		filterData.currentFilteredKeys->clear();
+ 	}
++	filterByName = false;
++	nameFilter.clear();
+ 	return;
+ }
+ 
+@@ -289,6 +291,12 @@ void FileFilterIndex::debugPrintIndexes()
+ 	}
+ }
+ 
++void FileFilterIndex::setNameFilter(const std::string& text)
++{
++	nameFilter = Utils::String::toUpper(Utils::String::trim(text));
++	filterByName = !nameFilter.empty();
++}
++
+ bool FileFilterIndex::showFile(FileData* game)
+ {
+ 	// this shouldn't happen, but just in case let's get it out of the way
+@@ -312,6 +320,17 @@ bool FileFilterIndex::showFile(FileData* game)
+ 
+ 	bool keepGoing = false;
+ 
++	// Name search is checked up front, independently of the key-indexed
++	// filters below. A match counts as a hit so a bare search returns
++	// results; the loop below can still veto it when the user also has
++	// genre/rating/etc. filters active.
++	if (filterByName)
++	{
++		if (Utils::String::toUpper(game->getName()).find(nameFilter) == std::string::npos)
++			return false;
++		keepGoing = true;
++	}
++
+ 	for (std::vector<FilterDataDecl>::const_iterator it = filterDataDecl.cbegin(); it != filterDataDecl.cend(); ++it ) {
+ 		FilterDataDecl filterData = (*it);
+ 		if(*(filterData.filteredByRef))
+diff --git a/es-app/src/FileFilterIndex.h b/es-app/src/FileFilterIndex.h
+index e3b4b4a..23093c3 100644
+--- a/es-app/src/FileFilterIndex.h
++++ b/es-app/src/FileFilterIndex.h
+@@ -40,10 +40,17 @@ public:
+ 	void addToIndex(FileData* game);
+ 	void removeFromIndex(FileData* game);
+ 	void setFilter(FilterIndexType type, std::vector<std::string>* values);
++
++	// Free-text substring search on the game name. Unlike the other
++	// filters this isn't key-indexed -- it's matched directly in
++	// showFile(), so it works across every title without needing an
++	// index rebuild.
++	void setNameFilter(const std::string& text);
++	const std::string& getNameFilter() const { return nameFilter; };
+ 	void clearAllFilters();
+ 	void debugPrintIndexes();
+ 	bool showFile(FileData* game);
+-	bool isFiltered() { return (filterByGenre || filterByPlayers || filterByPubDev || filterByRatings || filterByFavorites || filterByHidden || filterByKidGame); };
++	bool isFiltered() { return (filterByName || filterByGenre || filterByPlayers || filterByPubDev || filterByRatings || filterByFavorites || filterByHidden || filterByKidGame); };
+ 	bool isKeyBeingFilteredBy(std::string key, FilterIndexType type);
+ 	std::vector<FilterDataDecl>& getFilterDataDecls();
+ 
+@@ -68,6 +75,8 @@ private:
+ 
+ 	void clearIndex(std::map<std::string, int> indexMap);
+ 
++	bool filterByName;
++	std::string nameFilter;   // stored upper-cased for case-insensitive compare
+ 	bool filterByGenre;
+ 	bool filterByPlayers;
+ 	bool filterByPubDev;
+diff --git a/es-app/src/guis/GuiGamelistFilter.cpp b/es-app/src/guis/GuiGamelistFilter.cpp
+index f7a68b6..5202b11 100644
+--- a/es-app/src/guis/GuiGamelistFilter.cpp
++++ b/es-app/src/guis/GuiGamelistFilter.cpp
+@@ -1,6 +1,9 @@
+ #include "guis/GuiGamelistFilter.h"
+ 
+ #include "components/OptionListComponent.h"
++#include "components/TextComponent.h"
++#include "guis/GuiOnScreenKeyboard.h"
++#include "utils/StringUtil.h"
+ #include "views/UIModeController.h"
+ #include "SystemData.h"
+ 
+@@ -19,6 +22,17 @@ void GuiGamelistFilter::initializeMenu()
+ 
+ 	ComponentListRow row;
+ 
++	// Free-text search sits at the top -- for most people it's the whole
++	// reason for opening this menu.
++	mSearchText = std::make_shared<TextComponent>(mWindow,
++		mFilterIndex->getNameFilter().empty() ? "<none>" : mFilterIndex->getNameFilter(),
++		Font::get(FONT_SIZE_MEDIUM), 0x777777FF);
++	row.elements.clear();
++	row.addElement(std::make_shared<TextComponent>(mWindow, "SEARCH BY NAME", Font::get(FONT_SIZE_MEDIUM), 0x777777FF), true);
++	row.addElement(mSearchText, false);
++	row.makeAcceptInputHandler(std::bind(&GuiGamelistFilter::openSearchKeyboard, this));
++	mMenu.addRow(row);
++
+ 	// show filtered menu
+ 	row.elements.clear();
+ 	row.addElement(std::make_shared<TextComponent>(mWindow, "RESET ALL FILTERS", Font::get(FONT_SIZE_MEDIUM), 0x777777FF), true);
+@@ -36,6 +50,8 @@ void GuiGamelistFilter::initializeMenu()
+ void GuiGamelistFilter::resetAllFilters()
+ {
+ 	mFilterIndex->resetFilters();
++	if (mSearchText)
++		mSearchText->setText("<none>");
+ 	for (std::map<FilterIndexType, std::shared_ptr< OptionListComponent<std::string> >>::const_iterator it = mFilterOptions.cbegin(); it != mFilterOptions.cend(); ++it ) {
+ 		std::shared_ptr< OptionListComponent<std::string> > optionList = it->second;
+ 		optionList->selectNone();
+@@ -81,6 +97,16 @@ void GuiGamelistFilter::addFiltersToMenu()
+ 	}
+ }
+ 
++void GuiGamelistFilter::openSearchKeyboard()
++{
++	mWindow->pushGui(new GuiOnScreenKeyboard(mWindow, "SEARCH", mFilterIndex->getNameFilter(),
++		[this](const std::string& text)
++		{
++			mFilterIndex->setNameFilter(text);
++			mSearchText->setText(text.empty() ? "<none>" : Utils::String::toUpper(text));
++		}));
++}
++
+ void GuiGamelistFilter::applyFilters()
+ {
+ 	std::vector<FilterDataDecl> decls = mFilterIndex->getFilterDataDecls();
+diff --git a/es-app/src/guis/GuiGamelistFilter.h b/es-app/src/guis/GuiGamelistFilter.h
+index 003b72e..813b9c1 100644
+--- a/es-app/src/guis/GuiGamelistFilter.h
++++ b/es-app/src/guis/GuiGamelistFilter.h
+@@ -9,6 +9,7 @@
+ template<typename T>
+ class OptionListComponent;
+ class SystemData;
++class TextComponent;
+ 
+ class GuiGamelistFilter : public GuiComponent
+ {
+@@ -24,9 +25,12 @@ private:
+ 	void applyFilters();
+ 	void resetAllFilters();
+ 	void addFiltersToMenu();
++	void openSearchKeyboard();
+ 
+ 	std::map<FilterIndexType, std::shared_ptr< OptionListComponent<std::string> >> mFilterOptions;
+ 
++	std::shared_ptr<TextComponent> mSearchText;
++
+ 	MenuComponent mMenu;
+ 	SystemData* mSystem;
+ 	FileFilterIndex* mFilterIndex;
+diff --git a/es-core/CMakeLists.txt b/es-core/CMakeLists.txt
+index c22459f..0019e9f 100644
+--- a/es-core/CMakeLists.txt
++++ b/es-core/CMakeLists.txt
+@@ -53,6 +53,7 @@ set(CORE_HEADERS
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiDetectDevice.h
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiInputConfig.h
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiMsgBox.h
++	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiOnScreenKeyboard.h
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiTextEditPopup.h
+ 
+ 	# Math
+@@ -129,6 +130,7 @@ set(CORE_SOURCES
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiDetectDevice.cpp
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiInputConfig.cpp
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiMsgBox.cpp
++	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiOnScreenKeyboard.cpp
+ 	${CMAKE_CURRENT_SOURCE_DIR}/src/guis/GuiTextEditPopup.cpp
+ 
+ 	# Math
+diff --git a/es-core/src/guis/GuiOnScreenKeyboard.cpp b/es-core/src/guis/GuiOnScreenKeyboard.cpp
+new file mode 100644
+index 0000000..62b5425
+--- /dev/null
++++ b/es-core/src/guis/GuiOnScreenKeyboard.cpp
+@@ -0,0 +1,167 @@
++#include "guis/GuiOnScreenKeyboard.h"
++
++#include "components/ButtonComponent.h"
++#include "components/MenuComponent.h"
++#include "components/TextComponent.h"
++#include "utils/StringUtil.h"
++
++#include <algorithm>
++
++namespace
++{
++	// 10 columns wide. Rows are padded to 10 so the grid stays rectangular.
++	const int KB_COLS = 10;
++	const int KB_ROWS = 4;
++
++	const char* KEYS[KB_ROWS][KB_COLS] = {
++		{ "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
++		{ "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
++		{ "A", "S", "D", "F", "G", "H", "J", "K", "L", "-" },
++		{ "Z", "X", "C", "V", "B", "N", "M", ",", ".", "'" }
++	};
++
++	// Row 0 title, row 1 the typed text, rows 2..5 keys, row 6 buttons.
++	const int ROW_TITLE   = 0;
++	const int ROW_TEXT    = 1;
++	const int ROW_KEYS    = 2;
++	const int ROW_BUTTONS = ROW_KEYS + KB_ROWS;
++	const int GRID_ROWS   = ROW_BUTTONS + 1;
++}
++
++GuiOnScreenKeyboard::GuiOnScreenKeyboard(Window* window, const std::string& title, const std::string& initValue,
++	const std::function<void(const std::string&)>& okCallback)
++	: GuiComponent(window),
++	  mBackground(window, ":/frame.png"),
++	  mGrid(window, Vector2i(KB_COLS, GRID_ROWS)),
++	  mValue(initValue),
++	  mOkCallback(okCallback)
++{
++	addChild(&mBackground);
++	addChild(&mGrid);
++
++	mTitle = std::make_shared<TextComponent>(mWindow, Utils::String::toUpper(title),
++		Font::get(FONT_SIZE_LARGE), 0x555555FF, ALIGN_CENTER);
++	mGrid.setEntry(mTitle, Vector2i(0, ROW_TITLE), false, true, Vector2i(KB_COLS, 1));
++
++	mTextDisplay = std::make_shared<TextComponent>(mWindow, "",
++		Font::get(FONT_SIZE_MEDIUM), 0x777777FF, ALIGN_CENTER);
++	mGrid.setEntry(mTextDisplay, Vector2i(0, ROW_TEXT), false, true, Vector2i(KB_COLS, 1),
++		GridFlags::BORDER_TOP | GridFlags::BORDER_BOTTOM);
++	refreshDisplay();
++
++	// One button per key. ButtonComponent already handles the focus
++	// highlight, so navigation comes free from ComponentGrid.
++	std::shared_ptr<ButtonComponent> firstLetter;
++	for (int r = 0; r < KB_ROWS; r++)
++	{
++		for (int c = 0; c < KB_COLS; c++)
++		{
++			const std::string key = KEYS[r][c];
++			auto btn = std::make_shared<ButtonComponent>(mWindow, key, key,
++				[this, key] { appendChar(key); });
++			mGrid.setEntry(btn, Vector2i(c, ROW_KEYS + r), true, false);
++			if (r == 1 && c == 0)
++				firstLetter = btn;
++		}
++	}
++
++	std::vector< std::shared_ptr<ButtonComponent> > buttons;
++	buttons.push_back(std::make_shared<ButtonComponent>(mWindow, "SPACE", "space",
++		[this] { appendChar(" "); }));
++	buttons.push_back(std::make_shared<ButtonComponent>(mWindow, "DEL", "backspace",
++		[this] { backspace(); }));
++	buttons.push_back(std::make_shared<ButtonComponent>(mWindow, "CLEAR", "clear",
++		[this] { clearAll(); }));
++	buttons.push_back(std::make_shared<ButtonComponent>(mWindow, "SEARCH", "search",
++		[this] { if (mOkCallback) mOkCallback(mValue); delete this; }));
++	buttons.push_back(std::make_shared<ButtonComponent>(mWindow, "CANCEL", "cancel",
++		[this] { delete this; }));
++
++	mButtonGrid = makeButtonGrid(mWindow, buttons);
++	mGrid.setEntry(mButtonGrid, Vector2i(0, ROW_BUTTONS), true, false, Vector2i(KB_COLS, 1));
++
++	setSize(Renderer::getScreenWidth() * 0.9f, Renderer::getScreenHeight() * 0.75f);
++	setPosition((Renderer::getScreenWidth() - mSize.x()) / 2,
++	            (Renderer::getScreenHeight() - mSize.y()) / 2);
++
++	// Start focus on 'Q' rather than a digit.
++	if (firstLetter)
++		mGrid.setCursorTo(firstLetter);
++}
++
++void GuiOnScreenKeyboard::appendChar(const std::string& c)
++{
++	// Keep searches short; nobody types an essay with a d-pad.
++	if (mValue.size() >= 32)
++		return;
++	mValue += c;
++	refreshDisplay();
++}
++
++void GuiOnScreenKeyboard::backspace()
++{
++	if (!mValue.empty())
++		mValue.erase(mValue.size() - 1);
++	refreshDisplay();
++}
++
++void GuiOnScreenKeyboard::clearAll()
++{
++	mValue.clear();
++	refreshDisplay();
++}
++
++void GuiOnScreenKeyboard::refreshDisplay()
++{
++	mTextDisplay->setText(mValue.empty() ? "<type a game name>" : mValue);
++}
++
++void GuiOnScreenKeyboard::onSizeChanged()
++{
++	mBackground.fitTo(mSize, Vector3f::Zero(), Vector2f(-32, -32));
++
++	mGrid.setRowHeightPerc(ROW_TITLE, mTitle->getFont()->getHeight() / mSize.y());
++	mGrid.setRowHeightPerc(ROW_TEXT,  mTextDisplay->getFont()->getHeight() * 1.5f / mSize.y());
++	mGrid.setRowHeightPerc(ROW_BUTTONS, mButtonGrid->getSize().y() / mSize.y());
++	mGrid.setSize(mSize);
++}
++
++bool GuiOnScreenKeyboard::input(InputConfig* config, Input input)
++{
++	if (GuiComponent::input(config, input))
++		return true;
++
++	// B closes without searching.
++	if (config->isMappedTo("b", input) && input.value)
++	{
++		delete this;
++		return true;
++	}
++
++	// X is a shortcut for backspace so you aren't hunting for DEL.
++	if (config->isMappedTo("x", input) && input.value)
++	{
++		backspace();
++		return true;
++	}
++
++	// A physical keyboard still works if one happens to be plugged in.
++	if (input.value && input.type == TYPE_KEY)
++	{
++		if (input.id == SDLK_BACKSPACE)
++		{
++			backspace();
++			return true;
++		}
++	}
++
++	return false;
++}
++
++std::vector<HelpPrompt> GuiOnScreenKeyboard::getHelpPrompts()
++{
++	std::vector<HelpPrompt> prompts = mGrid.getHelpPrompts();
++	prompts.push_back(HelpPrompt("x", "backspace"));
++	prompts.push_back(HelpPrompt("b", "back"));
++	return prompts;
++}
+diff --git a/es-core/src/guis/GuiOnScreenKeyboard.h b/es-core/src/guis/GuiOnScreenKeyboard.h
+new file mode 100644
+index 0000000..41de304
+--- /dev/null
++++ b/es-core/src/guis/GuiOnScreenKeyboard.h
+@@ -0,0 +1,46 @@
++#pragma once
++#ifndef ES_CORE_GUIS_GUI_ON_SCREEN_KEYBOARD_H
++#define ES_CORE_GUIS_GUI_ON_SCREEN_KEYBOARD_H
++
++#include "components/ComponentGrid.h"
++#include "components/NinePatchComponent.h"
++#include "GuiComponent.h"
++
++#include <functional>
++#include <string>
++
++class TextComponent;
++
++// A d-pad navigable keyboard, so text can be entered with nothing but a
++// controller. RetroPie's EmulationStation only ships GuiTextEditPopup,
++// which needs a real USB keyboard -- no good on a console sitting under
++// a TV. Keys are laid out on a ComponentGrid so ES's existing focus
++// handling does the navigation for us.
++class GuiOnScreenKeyboard : public GuiComponent
++{
++public:
++	GuiOnScreenKeyboard(Window* window, const std::string& title, const std::string& initValue,
++		const std::function<void(const std::string&)>& okCallback);
++
++	bool input(InputConfig* config, Input input) override;
++	void onSizeChanged() override;
++	std::vector<HelpPrompt> getHelpPrompts() override;
++
++private:
++	void appendChar(const std::string& c);
++	void backspace();
++	void clearAll();
++	void refreshDisplay();
++
++	NinePatchComponent mBackground;
++	ComponentGrid mGrid;
++
++	std::shared_ptr<TextComponent> mTitle;
++	std::shared_ptr<TextComponent> mTextDisplay;
++	std::shared_ptr<ComponentGrid> mButtonGrid;
++
++	std::string mValue;
++	std::function<void(const std::string&)> mOkCallback;
++};
++
++#endif // ES_CORE_GUIS_GUI_ON_SCREEN_KEYBOARD_H

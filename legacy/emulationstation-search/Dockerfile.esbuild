@@ -1,0 +1,33 @@
+# Build environment for EmulationStation.
+#
+# Two uses:
+#   BASE=debian:bookworm            -> fast native compile-check (amd64)
+#   BASE=arm32v7/debian:buster-slim -> the armhf binary we actually ship
+#
+# The shipping build MUST be Buster: RetroPie 4.8 is Debian 10, and a
+# binary linked against a newer glibc simply won't run on the Pi.
+ARG BASE=debian:bookworm
+FROM ${BASE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Buster is EOL and lives on archive.debian.org now.
+RUN if grep -q buster /etc/apt/sources.list 2>/dev/null; then \
+      printf 'deb http://archive.debian.org/debian buster main contrib non-free\ndeb http://archive.debian.org/debian-security buster/updates main contrib non-free\n' > /etc/apt/sources.list && \
+      printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99no-check-valid ; \
+    fi
+
+# Retry around the fetch: deb.debian.org CDN nodes regularly serve a
+# stale index that 404s on a just-superseded package.
+RUN set -eux; \
+    for i in 1 2 3; do \
+      apt-get update -o Acquire::Retries=3 && \
+      apt-get install -y --no-install-recommends --fix-missing \
+        build-essential cmake pkg-config git ca-certificates \
+        libsdl2-dev libfreeimage-dev libfreetype6-dev libcurl4-openssl-dev \
+        rapidjson-dev libasound2-dev libgl1-mesa-dev \
+        libvlc-dev libvlccore-dev \
+      && break || { echo "attempt $i failed; refreshing index"; rm -rf /var/lib/apt/lists/*; sleep 5; }; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src

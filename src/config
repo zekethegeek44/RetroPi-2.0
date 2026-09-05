@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# ============================================================
+#  Retro Pi 2.0 — global CustomPiOS build config
+#
+#  Target: Raspberry Pi 4 / 400
+#  Base:   Raspberry Pi OS Trixie (Debian 13), 64-bit, Lite
+#
+#  Base changed from RetroPie 4.8 (Buster) because Buster ships
+#  Kodi 17.6 (2017) -- too old for the Jellyfin addon and for any
+#  modern skin. Trixie gives Kodi 21.2 and RetroArch 1.20 straight
+#  from apt, so nothing has to be compiled.
+# ============================================================
+
+export DIST_NAME="RetroPi2"
+export DIST_VERSION="0.2.0"
+
+export MODULES="base(retropi2)"
+
+# ---- Base image -------------------------------------------
+# For any board other than raspberrypiarmhf, CustomPiOS ignores a
+# BASE_ZIP_IMG we set here -- it overwrites it with
+#     ls -t $BASE_IMAGE_PATH/*.{zip,7z,xz}
+# and defaults BASE_IMAGE_PATH to image-<board>. So point
+# BASE_IMAGE_PATH at our mounted dir and leave the compressed .xz in
+# it; CustomPiOS unpacks it with 7za itself.
+export BASE_IMAGE_PATH="${DIST_PATH}/image"
+
+export BASE_BOARD="raspberrypiarm64"
+export BASE_ARCH="aarch64"
+export BASE_DISTRO="raspios64"
+
+# Trixie keeps the boot partition at /boot/firmware (this is also the
+# CustomPiOS default, unlike the old Buster base which used /boot).
+export BASE_BOOT_MOUNT_PATH="boot/firmware"
+export BASE_ROOT_PARTITION=2
+
+# Raspberry Pi OS has shipped with NO default user since Bookworm --
+# it expects you to create one on first boot. We create it at build
+# time instead, so the image boots straight into Kodi.
+export BASE_USER="pi"
+export BASE_ADD_USER="yes"
+export BASE_USER_PASSWORD="raspberry"
+
+# Kodi, RetroArch and 13 emulator cores need room.
+export BASE_IMAGE_ENLARGEROOT=3500
+export BASE_IMAGE_RESIZEROOT=400
+
+export BASE_APT_CACHE="no"
+export BASE_OVERRIDE_HOSTNAME="retropi2"
+export BASE_SSH_ENABLE="yes"
+
+# Ship an uncompressed .img; build.ps1 collects it directly.
+export BASE_RELEASE_COMPRESS="no"

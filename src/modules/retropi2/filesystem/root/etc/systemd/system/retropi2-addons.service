@@ -1,0 +1,28 @@
+[Unit]
+Description=Retro Pi 2.0 first-boot downloads (Kodi addons + emulator cores)
+# Needs the network, so it can't run at image build time.
+After=network-online.target retropi2-firstboot.service
+Wants=network-online.target
+Before=retropi2-kodi.service
+ConditionPathExists=!/var/lib/retropi2/firstboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=pi
+Group=pi
+ExecStart=/usr/local/bin/retropi2-install-addons
+ExecStart=/usr/local/bin/retropi2-install-cores
+# One flag for both steps, written only if both got that far. Delete it
+# and restart the unit to retry:  sudo rm /var/lib/retropi2/firstboot-done
+ExecStartPost=/usr/bin/touch /var/lib/retropi2/firstboot-done
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+# If the network is down or a repo has moved, boot into Kodi anyway
+# with the default skin rather than hanging on a black screen.
+TimeoutStartSec=900
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target
