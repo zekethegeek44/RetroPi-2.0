@@ -1,0 +1,11 @@
+[Unit]
+Description=Auto-mount USB storage %i
+# Templated per device: udev names the instance after the kernel device.
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/bin/retropi2-usb-mount add %i
+TimeoutStartSec=60

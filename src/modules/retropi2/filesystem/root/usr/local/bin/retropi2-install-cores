@@ -12,7 +12,9 @@ that fails to download is logged and skipped, never fatal.
 
 import io
 import os
+import shutil
 import sys
+import tempfile
 import urllib.request
 import zipfile
 
@@ -20,6 +22,9 @@ BUILDBOT = "https://buildbot.libretro.com/nightly/linux/aarch64/latest"
 
 HOME = os.environ.get("HOME", "/home/pi")
 CORE_DIR = os.path.join(HOME, ".config", "retroarch", "cores")
+AUTOCONF_DIR = os.path.join(HOME, ".config", "retroarch", "autoconfig")
+AUTOCONF_URL = ("https://codeload.github.com/libretro/"
+                "retroarch-joypad-autoconfig/zip/refs/heads/master")
 DONE_FLAG = "/var/lib/retropi2/cores-done"
 
 # Chosen for a Pi 4: everything here is comfortably playable, apart from
@@ -77,6 +82,51 @@ def install_core(name, core):
         return False
 
 
+def install_autoconfigs():
+    """Controller profiles, so gamepads work without manual mapping.
+
+    RetroArch on Linux uses the udev input driver, so only the udev/
+    profiles matter -- about 440 of them, covering essentially any
+    gamepad someone is likely to plug in.
+    """
+    if os.path.isdir(AUTOCONF_DIR) and os.listdir(AUTOCONF_DIR) and not FORCE:
+        log("controller profiles already present")
+        return True
+    log("downloading controller profiles...")
+    try:
+        data = fetch(AUTOCONF_URL, timeout=180)
+    except Exception as exc:
+        log("  ! controller profiles failed: %s" % exc)
+        return False
+
+    os.makedirs(AUTOCONF_DIR, exist_ok=True)
+    tmp = tempfile.mkdtemp()
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            z.extractall(tmp)
+        dirs = [e for e in os.listdir(tmp) if os.path.isdir(os.path.join(tmp, e))]
+        if len(dirs) != 1:
+            log("  ! unexpected archive layout: %r" % dirs)
+            return False
+        src = os.path.join(tmp, dirs[0], "udev")
+        if not os.path.isdir(src):
+            log("  ! no udev/ directory in the archive")
+            return False
+        n = 0
+        for name in os.listdir(src):
+            if name.endswith(".cfg"):
+                shutil.copy2(os.path.join(src, name),
+                             os.path.join(AUTOCONF_DIR, name))
+                n += 1
+        log("  + %d controller profiles" % n)
+        return n > 0
+    except Exception as exc:
+        log("  ! controller profiles failed: %s" % exc)
+        return False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def write_retroarch_cfg():
     """Point RetroArch at the downloaded cores and the ROM folder."""
     cfg_dir = os.path.join(HOME, ".config", "retroarch")
@@ -87,6 +137,7 @@ def write_retroarch_cfg():
         return
     settings = {
         "core_directory": CORE_DIR,
+        "joypad_autoconfig_dir": AUTOCONF_DIR,
         "rgui_browser_directory": os.path.join(HOME, "roms"),
         "savefile_directory": os.path.join(HOME, ".config", "retroarch", "saves"),
         "savestate_directory": os.path.join(HOME, ".config", "retroarch", "states"),
@@ -115,6 +166,7 @@ def main():
         if install_core(name, core):
             ok += 1
 
+    install_autoconfigs()
     write_retroarch_cfg()
 
     os.makedirs(os.path.dirname(DONE_FLAG), exist_ok=True)

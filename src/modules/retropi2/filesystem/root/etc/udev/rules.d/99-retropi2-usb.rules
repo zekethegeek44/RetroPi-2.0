@@ -1,0 +1,6 @@
+# Auto-mount USB storage so a stick full of ROMs just appears.
+#
+# SYSTEMD_WANTS rather than RUN+=: udev kills long-running RUN commands,
+# and mounting can block. systemd runs the unit properly detached.
+ACTION=="add",    KERNEL=="sd[a-z][0-9]", SUBSYSTEMS=="usb", ENV{SYSTEMD_WANTS}="retropi2-usb-mount@%k.service"
+ACTION=="remove", KERNEL=="sd[a-z][0-9]", SUBSYSTEMS=="usb", RUN+="/usr/local/bin/retropi2-usb-mount remove %k"

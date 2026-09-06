@@ -81,6 +81,20 @@ chk "git (for updates)" /usr/bin/git
 printf '  addon owner: %s
 ' "$(stat -c '%u:%g' /mnt/r/home/pi/.kodi/addons/script.retropi2.update 2>/dev/null || echo '?')"
 
+echo "--- sharing and peripherals ---"
+chk "samba shares conf"  /etc/samba/retropi2-shares.conf
+chk "smbd enabled"       /etc/systemd/system/multi-user.target.wants/smbd.service
+chk "bluetooth enabled"  /etc/systemd/system/dbus-org.bluez.service
+chk "usb automount"      /usr/local/bin/retropi2-usb-mount
+chk "usb udev rule"      /etc/udev/rules.d/99-retropi2-usb.rules
+chk "usb mount unit"     /etc/systemd/system/retropi2-usb-mount@.service
+chk "cec-client"         /usr/bin/cec-client
+chk "kodi guisettings"   /home/pi/.kodi/userdata/guisettings.xml
+printf '  smb.conf includes our shares: %s
+'     "$(grep -c 'retropi2-shares' /mnt/r/etc/samba/smb.conf 2>/dev/null || echo 0)"
+printf '  kodi web remote: %s
+'     "$(grep -o 'services.webserver">[a-z]*' /mnt/r/home/pi/.kodi/userdata/guisettings.xml 2>/dev/null | head -1)"
+
 echo "--- directories ---"
 chk "roms"   /home/pi/roms
 chk "media"  /home/pi/media

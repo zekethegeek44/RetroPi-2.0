@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# ============================================================
+#  Auto-mount USB storage.
+#
+#  Called by udev (via a systemd unit on add, directly on remove) so a
+#  USB stick of ROMs appears at /media/<label> without anyone touching
+#  a terminal.
+#
+#  Usage: retropi2-usb-mount add|remove <kernel-device>   e.g. sda1
+# ============================================================
+set -u
+
+ACTION="${1:-}"
+DEV="${2:-}"
+[ -n "$ACTION" ] && [ -n "$DEV" ] || exit 0
+
+NODE="/dev/$DEV"
+LOG="/var/log/retropi2-usb.log"
+log() { echo "$(date -Is) $*" >> "$LOG"; }
+
+case "$ACTION" in
+remove)
+    # Find whatever it was mounted as and clean up.
+    MP=$(findmnt -n -o TARGET --source "$NODE" 2>/dev/null | head -1)
+    if [ -n "$MP" ]; then
+        umount -l "$MP" 2>/dev/null
+        rmdir "$MP" 2>/dev/null
+        log "unmounted $NODE from $MP"
+    fi
+    exit 0
+    ;;
+add) ;;
+*) exit 0 ;;
+esac
+
+[ -b "$NODE" ] || exit 0
+# Already mounted (e.g. it's the SD card itself)? Leave it alone.
+findmnt -n --source "$NODE" >/dev/null 2>&1 && exit 0
+
+# Never touch the boot device -- that's the SD card we booted from.
+ROOT_SRC=$(findmnt -n -o SOURCE / 2>/dev/null)
+case "$ROOT_SRC" in
+    "$NODE"|"${NODE%%[0-9]*}"*) log "skipping $NODE (boot device)"; exit 0 ;;
+esac
+
+eval "$(blkid -o export "$NODE" 2>/dev/null)"
+TYPE="${TYPE:-}"
+LABEL="${LABEL:-}"
+
+case "$TYPE" in
+    vfat|exfat|ntfs|ext2|ext3|ext4) ;;
+    *) log "skipping $NODE (unsupported or no filesystem: '${TYPE:-none}')"; exit 0 ;;
+esac
+
+# Prefer the drive's label; fall back to the device name.
+NAME=$(printf '%s' "${LABEL:-$DEV}" | tr -cd '[:alnum:]._-')
+[ -n "$NAME" ] || NAME="$DEV"
+MP="/media/$NAME"
+[ -e "$MP" ] && MP="/media/${NAME}-${DEV}"
+
+mkdir -p "$MP"
+
+# pi must own the files, so games copied onto a stick elsewhere are
+# readable and writable here.
+case "$TYPE" in
+    vfat|exfat|ntfs)
+        OPTS="uid=1000,gid=1000,umask=0002,noatime,nofail"
+        [ "$TYPE" = "ntfs" ] && OPTS="uid=1000,gid=1000,umask=0002,noatime,nofail,big_writes"
+        ;;
+    *)  OPTS="noatime,nofail" ;;
+esac
+
+if mount -o "$OPTS" "$NODE" "$MP" 2>>"$LOG"; then
+    [ "$TYPE" = "ext2" ] || [ "$TYPE" = "ext3" ] || [ "$TYPE" = "ext4" ] && \
+        chown pi:pi "$MP" 2>/dev/null
+    log "mounted $NODE ($TYPE, label='${LABEL:-none}') at $MP"
+else
+    rmdir "$MP" 2>/dev/null
+    log "FAILED to mount $NODE ($TYPE)"
+fi
+exit 0

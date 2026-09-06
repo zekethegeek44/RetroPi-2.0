@@ -187,21 +187,19 @@ show_games() {
     ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     [ -z "$ip" ] && ip="<no network yet>"
 
-    msg "Your games go in:
-  $ROMS_DIR
+    msg "The easy way, from Windows:
 
-with one folder per system, for example:
-  $ROMS_DIR/snes
-  $ROMS_DIR/nes
-  $ROMS_DIR/n64
+  Open Explorer and go to:
+    \\\\retropi2\\roms
+  (or  \\\\$ip\\roms  if the name does not work)
 
-To copy them over from Windows, open Explorer and go to:
-  \\\\$ip\\pi
+Drop each game into its console folder, for example
+  snes, nes, megadrive, n64, psx
 
-or use scp from your PC:
-  scp -r snes pi@$ip:~/roms/
+A USB stick works too - plug it in and it appears
+under /media, then copy the files across.
 
-Once they're there, open Kodi and go to
+Once they are there, open Kodi and go to
   Add-ons > Advanced Kodi Launcher
 to scan them in and download the box art."
 }

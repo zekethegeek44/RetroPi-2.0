@@ -53,7 +53,10 @@ fi
 
 # Bits the wizard and addon installer rely on.
 apt-get install -y --no-install-recommends \
-    whiptail rsync unzip ca-certificates cifs-utils nfs-common git
+    whiptail rsync unzip ca-certificates cifs-utils nfs-common git \
+    samba samba-common-bin avahi-daemon \
+    bluez bluez-tools \
+    cec-utils udisks2 exfatprogs ntfs-3g
 
 # ------------------------------------------------------------
 # 2. Media and ROM directories
@@ -101,8 +104,62 @@ if [ "$RP2_KODI" == "yes" ]; then
 EOF
     fi
 
+    # Baseline Kodi settings. The skin is deliberately NOT set here --
+    # retropi2-install-addons merges that in later, but only if the skin
+    # actually installed.
+    GUI="/home/$RP2_USER/.kodi/userdata/guisettings.xml"
+    if [ ! -f "$GUI" ]; then
+        cat > "$GUI" <<'EOF'
+<settings version="2">
+    <setting id="services.devicename">RetroPi2</setting>
+    <setting id="services.webserver">true</setting>
+    <setting id="services.webserverport">8080</setting>
+    <setting id="services.webserverusername">kodi</setting>
+    <setting id="services.webserverpassword">retropi2</setting>
+    <setting id="services.esenabled">true</setting>
+    <setting id="services.zeroconf">true</setting>
+    <setting id="services.upnp">true</setting>
+    <setting id="input.enablejoystick">true</setting>
+</settings>
+EOF
+    fi
+
     chown -R "$RP2_USER":"$RP2_USER" "/home/$RP2_USER/.kodi"
 fi
+
+# ------------------------------------------------------------
+# 3b. Network shares, Bluetooth, USB automount
+# ------------------------------------------------------------
+echo "[retropi2] Configuring file sharing and peripherals"
+
+# --- Samba: drag games in from Explorer at \retropi2oms ---
+if [ -f /etc/samba/smb.conf ]; then
+    cp /etc/samba/smb.conf /etc/samba/smb.conf.retropi2.bak
+    # Guest access needs this in [global]; without it Samba rejects
+    # unknown users outright instead of treating them as guests.
+    if ! grep -q "map to guest" /etc/samba/smb.conf; then
+        sed -i '/^\[global\]/a \   map to guest = Bad User' /etc/samba/smb.conf
+    fi
+    if ! grep -q "retropi2-shares.conf" /etc/samba/smb.conf; then
+        printf '
+# Retro Pi 2.0 shares
+include = /etc/samba/retropi2-shares.conf
+'             >> /etc/samba/smb.conf
+    fi
+fi
+systemctl enable smbd 2>/dev/null || true
+systemctl enable nmbd 2>/dev/null || true
+# avahi advertises the box so "retropi2.local" resolves from a Mac or
+# phone as well as by NetBIOS name from Windows.
+systemctl enable avahi-daemon 2>/dev/null || true
+
+# --- Bluetooth: wireless controllers ---
+systemctl enable bluetooth 2>/dev/null || true
+
+# --- USB automount ---
+chmod +x /usr/local/bin/retropi2-usb-mount
+mkdir -p /media
+chown "$RP2_USER":"$RP2_USER" /media
 
 # ------------------------------------------------------------
 # 4. Fast boot
@@ -112,7 +169,7 @@ if [ "$RP2_FAST_BOOT" == "yes" ]; then
     for svc in triggerhappy.service man-db.timer \
                apt-daily.timer apt-daily-upgrade.timer \
                apt-daily.service apt-daily-upgrade.service \
-               bluetooth.service ModemManager.service; do
+               ModemManager.service; do
         systemctl disable "$svc" 2>/dev/null || true
     done
     systemctl disable NetworkManager-wait-online.service 2>/dev/null || true

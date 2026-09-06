@@ -15,6 +15,10 @@ behind it so games launch from the same place as everything else.
 | **First-boot wizard** | WiFi, media server, SSH and timezone handled on screen. |
 | **Fast, quiet boot** | Background services stripped, no console spam, no splash delay. |
 | **Updates over WiFi** | Kodi → Favourites → *Update Retro Pi 2.0*. No reflashing, no SSH. |
+| **Drag-and-drop games** | `\\retropi2\roms` in Windows Explorer. USB sticks auto-mount too. |
+| **TV remote works** | HDMI-CEC, so Kodi is driven by the remote you already have. |
+| **Phone remote** | Kodi web interface on `:8080` — use the official Kodi app. |
+| **Controllers** | Bluetooth enabled, plus ~440 gamepad profiles so pads work unmapped. |
 
 ---
 
@@ -157,6 +161,31 @@ journalctl -u retropi2-addons
 
 ---
 
+## Getting games and media on
+
+**From Windows** — open Explorer and go to:
+
+```
+\\retropi2\roms          games, one folder per console
+\\retropi2\media         local movies and TV
+\\retropi2\usb           anything plugged into a USB port
+```
+
+Guest access, no password. That is deliberate — it is what makes
+drag-and-drop work with no setup, and it matches what RetroPie did.
+**It suits a home LAN and nothing else.** On a shared or public network,
+delete `/etc/samba/retropi2-shares.conf` and use `scp` instead.
+
+**From a USB stick** — plug it in. `retropi2-usb-mount` (a udev rule plus a
+templated systemd unit) mounts it under `/media/<label>`, owned by `pi`, and
+unmounts it on removal. FAT, exFAT, NTFS and ext are handled; the boot device
+is explicitly skipped.
+
+Keeping ROMs on a USB drive is also the tidiest way to make them survive any
+future reflash.
+
+---
+
 ## Updating without reflashing
 
 Kodi home screen → **Favourites → Update Retro Pi 2.0**. It updates four things:
@@ -200,8 +229,9 @@ would silently do nothing.
 3. Copy ROMs to `/home/pi/roms/<system>/` (the wizard shows you how).
 4. In Kodi: **Add-ons → Advanced Kodi Launcher** to scan games and get box art.
 
-Default login is `pi` / `raspberry`. Change it if this box is on a shared
-network.
+Default login is `pi` / `raspberry`, and Kodi's web remote is `kodi` /
+`retropi2` on port 8080. Both are fine on a home network and should be
+changed on any other kind.
 
 ---
 

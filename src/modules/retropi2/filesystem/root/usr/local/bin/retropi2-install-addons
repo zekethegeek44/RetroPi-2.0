@@ -241,20 +241,41 @@ def install_jellyfin(index):
 
 
 def set_skin(skin_id):
-    """Pre-seed the skin choice.
+    """Merge the skin choice into guisettings.xml.
+
+    The image ships a guisettings.xml with the web-remote and CEC
+    settings already in it, so this must merge rather than bail out or
+    overwrite -- an earlier version skipped when the file existed, which
+    meant the skin was never applied.
 
     Safe to set optimistically: Kodi falls back to Estuary by itself if a
     skin fails to load.
     """
     os.makedirs(USERDATA, exist_ok=True)
     path = os.path.join(USERDATA, "guisettings.xml")
+
+    root = None
     if os.path.exists(path):
-        log("guisettings.xml already exists; leaving the skin choice alone")
-        return
-    with open(path, "w", encoding="utf-8") as f:
-        f.write('<settings version="2">\n'
-                '    <setting id="lookandfeel.skin">%s</setting>\n'
-                '</settings>\n' % skin_id)
+        try:
+            root = ET.parse(path).getroot()
+        except ET.ParseError as exc:
+            log("guisettings.xml is unparseable (%s); rewriting it" % exc)
+            root = None
+    if root is None:
+        root = ET.Element("settings", {"version": "2"})
+
+    for node in root.findall("setting"):
+        if node.get("id") == "lookandfeel.skin":
+            if node.text == skin_id:
+                log("skin already set to %s" % skin_id)
+                return
+            node.text = skin_id
+            break
+    else:
+        node = ET.SubElement(root, "setting", {"id": "lookandfeel.skin"})
+        node.text = skin_id
+
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
     log("skin set to %s" % skin_id)
 
 
