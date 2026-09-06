@@ -46,6 +46,12 @@ BUILTIN = re.compile(r"^(xbmc\.|kodi\.|metadata\.common\.)")
 
 TIMEOUT = 60
 
+# --force reinstalls the addons we manage, so an update actually pulls
+# new versions. Dependencies already present are still left alone.
+# Addon *settings* live in userdata/, not in the addon directory, so
+# replacing the directory does not lose configuration.
+FORCE = "--force" in sys.argv
+
 
 def log(msg):
     print("[retropi2-addons] " + str(msg), flush=True)
@@ -69,7 +75,9 @@ def load_official_index():
     return idx
 
 
-def already_installed(addon_id):
+def already_installed(addon_id, respect_force=False):
+    if respect_force and FORCE:
+        return False
     return os.path.isdir(os.path.join(ADDONS, addon_id))
 
 
@@ -142,7 +150,7 @@ def install_official(addon_id, index, depth=0):
 
 
 def install_github(repo, branch, addon_id, index):
-    if already_installed(addon_id):
+    if already_installed(addon_id, respect_force=True):
         return True
     url = "https://codeload.github.com/%s/zip/refs/heads/%s" % (repo, branch)
     try:
@@ -156,7 +164,7 @@ def install_github(repo, branch, addon_id, index):
 
 
 def install_url(url, addon_id, index, strip_root=False):
-    if already_installed(addon_id):
+    if already_installed(addon_id, respect_force=True):
         return True
     try:
         log("+ %s (%s)" % (addon_id, url.rsplit("/", 1)[-1]))

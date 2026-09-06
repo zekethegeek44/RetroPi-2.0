@@ -14,6 +14,7 @@ behind it so games launch from the same place as everything else.
 | **Games with box art** | Advanced Kodi Launcher scans your ROMs, fetches artwork, and launches RetroArch straight into the game. |
 | **First-boot wizard** | WiFi, media server, SSH and timezone handled on screen. |
 | **Fast, quiet boot** | Background services stripped, no console spam, no splash delay. |
+| **Updates over WiFi** | Kodi → Favourites → *Update Retro Pi 2.0*. No reflashing, no SSH. |
 
 ---
 
@@ -153,6 +154,42 @@ leaving a black screen on the TV. Re-run it any time:
 sudo systemctl start retropi2-addons
 journalctl -u retropi2-addons
 ```
+
+---
+
+## Updating without reflashing
+
+Kodi home screen → **Favourites → Update Retro Pi 2.0**. It updates four things:
+
+| | What |
+|---|---|
+| **system** | `apt` packages — Kodi, RetroArch, the OS |
+| **scripts** | this project, pulled from its GitHub repo |
+| **cores** | libretro emulator cores |
+| **addons** | the Kodi skin and add-ons |
+
+Same thing over SSH, with finer control:
+
+```bash
+sudo retropi2-update              # everything
+sudo retropi2-update --cores      # just emulator cores
+sudo retropi2-update --system     # just apt
+tail -f /var/log/retropi2-update.log
+```
+
+**`apt upgrade` is the default, not `full-upgrade`.** Full upgrade is offered as
+a separate, explicitly-confirmed choice because it can install a new major
+version of Kodi, which sometimes breaks the skin — and a Pi has no snapshot to
+roll back to. There is no unattended auto-update for the same reason: you would
+find out it broke when the TV showed a broken interface.
+
+Because updates come from the GitHub repo, fixes made to this project reach the
+Pi without a reflash. Only things baked in at build time — the base OS version,
+partition layout, boot config — still need a new image.
+
+Note that `--force` is passed to the core and add-on installers during an
+update. Both normally skip anything already present, so without it an update
+would silently do nothing.
 
 ---
 

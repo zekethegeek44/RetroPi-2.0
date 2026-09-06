@@ -46,6 +46,10 @@ CORES = [
 
 TIMEOUT = 120
 
+# --force re-downloads cores that are already present. Without it an
+# "update" would skip everything and silently do nothing.
+FORCE = "--force" in sys.argv
+
 
 def log(msg):
     print("[retropi2-cores] " + str(msg), flush=True)
@@ -59,7 +63,7 @@ def fetch(url, timeout=TIMEOUT):
 
 def install_core(name, core):
     target = os.path.join(CORE_DIR, core + "_libretro.so")
-    if os.path.exists(target):
+    if os.path.exists(target) and not FORCE:
         return True
     url = "%s/%s_libretro.so.zip" % (BUILDBOT, core)
     try:
@@ -103,7 +107,8 @@ def write_retroarch_cfg():
 
 def main():
     os.makedirs(CORE_DIR, exist_ok=True)
-    log("downloading emulator cores for aarch64...")
+    log("downloading emulator cores for aarch64%s..."
+        % (" (forced refresh)" if FORCE else ""))
 
     ok = 0
     for name, core in CORES:

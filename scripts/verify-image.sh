@@ -72,6 +72,15 @@ chk "wizard enabled"    /etc/systemd/system/multi-user.target.wants/retropi2-fir
 chk "downloads enabled" /etc/systemd/system/multi-user.target.wants/retropi2-addons.service
 chk "state dir"         /var/lib/retropi2
 
+echo "--- over-the-air updates ---"
+chk "updater script"    /usr/local/bin/retropi2-update
+chk "kodi update addon" /home/pi/.kodi/addons/script.retropi2.update/default.py
+chk "addon manifest"    /home/pi/.kodi/addons/script.retropi2.update/addon.xml
+chk "kodi favourite"    /home/pi/.kodi/userdata/favourites.xml
+chk "git (for updates)" /usr/bin/git
+printf '  addon owner: %s
+' "$(stat -c '%u:%g' /mnt/r/home/pi/.kodi/addons/script.retropi2.update 2>/dev/null || echo '?')"
+
 echo "--- directories ---"
 chk "roms"   /home/pi/roms
 chk "media"  /home/pi/media

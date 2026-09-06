@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# ============================================================
+#  Retro Pi 2.0 -- update over the network, no reflash.
+#
+#  Updates, in this order:
+#    system   apt packages (Kodi, RetroArch, the OS itself)
+#    scripts  this project, pulled from GitHub
+#    cores    libretro emulator cores
+#    addons   Kodi skin and addons
+#
+#  Usage:
+#    retropi2-update                 everything (default)
+#    retropi2-update --system        just apt
+#    retropi2-update --cores         just emulator cores
+#    retropi2-update --addons        just Kodi addons
+#    retropi2-update --scripts       just this project's scripts
+#    retropi2-update --full-upgrade  use apt full-upgrade (see below)
+#
+#  Progress is printed as machine-readable STEP:/DONE: lines so the
+#  Kodi addon can show a progress bar; humans get the same information.
+#
+#  --full-upgrade is deliberately NOT the default. It can pull a new
+#  major Kodi version, which can break the skin, and a Pi has no
+#  snapshot to roll back to.
+# ============================================================
+set -uo pipefail
+
+REPO_URL="${RP2_REPO_URL:-https://github.com/zekethegeek44/RetroPi-2.0.git}"
+REPO_DIR="/opt/retropi2/repo"
+LOG="/var/log/retropi2-update.log"
+RESTART_FLAG="/run/retropi2-restart-needed"
+USER_NAME="pi"
+
+DO_SYSTEM=0; DO_SCRIPTS=0; DO_CORES=0; DO_ADDONS=0
+FULL_UPGRADE=0
+ANY_SELECTED=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --system)        DO_SYSTEM=1;  ANY_SELECTED=1 ;;
+        --scripts)       DO_SCRIPTS=1; ANY_SELECTED=1 ;;
+        --cores)         DO_CORES=1;   ANY_SELECTED=1 ;;
+        --addons)        DO_ADDONS=1;  ANY_SELECTED=1 ;;
+        --full-upgrade)  FULL_UPGRADE=1 ;;
+        --all)           ANY_SELECTED=0 ;;
+        -h|--help)       sed -n '2,28p' "$0"; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+if [ "$ANY_SELECTED" -eq 0 ]; then
+    DO_SYSTEM=1; DO_SCRIPTS=1; DO_CORES=1; DO_ADDONS=1
+fi
+
+# apt and /opt both need root. pi has passwordless sudo.
+if [ "$(id -u)" -ne 0 ]; then
+    if sudo -n true 2>/dev/null; then
+        exec sudo "$0" "$@"
+    else
+        echo "retropi2-update needs root and passwordless sudo is unavailable." >&2
+        exit 1
+    fi
+fi
+
+mkdir -p "$(dirname "$LOG")"
+exec > >(tee -a "$LOG") 2>&1
+echo "=== retropi2-update $(date -Is) ==="
+
+step()  { echo "STEP:$1:$2"; }
+ok()    { echo "DONE:$1:ok"; }
+bad()   { echo "DONE:$1:failed"; }
+
+rc_overall=0
+
+# ---------------- system packages ----------------
+if [ "$DO_SYSTEM" -eq 1 ]; then
+    step system "Updating system packages"
+    export DEBIAN_FRONTEND=noninteractive
+    if apt-get update; then
+        before=$(dpkg-query -W -f='${Package} ${Version}\n' kodi retroarch 2>/dev/null)
+        if [ "$FULL_UPGRADE" -eq 1 ]; then
+            apt-get -y full-upgrade
+        else
+            apt-get -y upgrade
+        fi
+        rc=$?
+        after=$(dpkg-query -W -f='${Package} ${Version}\n' kodi retroarch 2>/dev/null)
+        # Kodi's files were replaced underneath the running process; it
+        # needs a restart before the new version is actually in use.
+        if [ "$before" != "$after" ]; then
+            touch "$RESTART_FLAG"
+            echo "kodi/retroarch changed -- a restart is needed"
+        fi
+        apt-get -y autoremove --purge
+        apt-get clean
+        [ "$rc" -eq 0 ] && ok system || { bad system; rc_overall=1; }
+    else
+        bad system; rc_overall=1
+    fi
+fi
+
+# ---------------- project scripts ----------------
+if [ "$DO_SCRIPTS" -eq 1 ]; then
+    step scripts "Updating Retro Pi 2.0 scripts"
+    if ! command -v git >/dev/null 2>&1; then
+        echo "git is not installed; skipping"
+        bad scripts; rc_overall=1
+    else
+        mkdir -p "$(dirname "$REPO_DIR")"
+        if [ -d "$REPO_DIR/.git" ]; then
+            git -C "$REPO_DIR" remote set-url origin "$REPO_URL"
+            git -C "$REPO_DIR" fetch --depth 1 origin main && \
+            git -C "$REPO_DIR" reset --hard origin/main
+            rc=$?
+        else
+            rm -rf "$REPO_DIR"
+            git clone --depth 1 --branch main "$REPO_URL" "$REPO_DIR"
+            rc=$?
+        fi
+
+        if [ "$rc" -eq 0 ]; then
+            SRC="$REPO_DIR/src/modules/retropi2/filesystem/root"
+            HOMESRC="$REPO_DIR/src/modules/retropi2/filesystem/home/$USER_NAME"
+            # Copy our own scripts and units into place. Deliberately
+            # narrow: only the files this project owns, never a blanket
+            # copy over /.
+            for f in retropi2-firstboot retropi2-install-addons \
+                     retropi2-install-cores retropi2-update; do
+                if [ -f "$SRC/usr/local/bin/$f" ]; then
+                    install -m 0755 "$SRC/usr/local/bin/$f" "/usr/local/bin/$f"
+                    echo "  updated /usr/local/bin/$f"
+                fi
+            done
+            for u in retropi2-kodi retropi2-firstboot retropi2-addons; do
+                if [ -f "$SRC/etc/systemd/system/$u.service" ]; then
+                    install -m 0644 "$SRC/etc/systemd/system/$u.service" \
+                        "/etc/systemd/system/$u.service"
+                    echo "  updated $u.service"
+                fi
+            done
+            if [ -d "$HOMESRC/.kodi/addons/script.retropi2.update" ]; then
+                cp -a "$HOMESRC/.kodi/addons/script.retropi2.update" \
+                      "/home/$USER_NAME/.kodi/addons/" 2>/dev/null || true
+                chown -R "$USER_NAME":"$USER_NAME" \
+                    "/home/$USER_NAME/.kodi/addons/script.retropi2.update" 2>/dev/null || true
+            fi
+            systemctl daemon-reload
+            ok scripts
+        else
+            bad scripts; rc_overall=1
+        fi
+    fi
+fi
+
+# ---------------- emulator cores ----------------
+if [ "$DO_CORES" -eq 1 ]; then
+    step cores "Updating emulator cores"
+    # The installers run as pi and skip anything already present, so
+    # clear the markers to force a refresh.
+    # --force makes the installer re-download rather than skip what
+    # is already there; without it "update" would be a no-op.
+    if sudo -u "$USER_NAME" HOME="/home/$USER_NAME" \
+            /usr/local/bin/retropi2-install-cores --force; then
+        ok cores
+    else
+        bad cores; rc_overall=1
+    fi
+fi
+
+# ---------------- Kodi addons ----------------
+if [ "$DO_ADDONS" -eq 1 ]; then
+    step addons "Updating Kodi addons"
+    if sudo -u "$USER_NAME" HOME="/home/$USER_NAME" \
+            /usr/local/bin/retropi2-install-addons --force; then
+        ok addons
+    else
+        bad addons; rc_overall=1
+    fi
+fi
+
+echo "=== finished $(date -Is), status $rc_overall ==="
+if [ -f "$RESTART_FLAG" ]; then
+    echo "RESTART:needed"
+fi
+exit "$rc_overall"

@@ -53,7 +53,7 @@ fi
 
 # Bits the wizard and addon installer rely on.
 apt-get install -y --no-install-recommends \
-    whiptail rsync unzip ca-certificates cifs-utils nfs-common
+    whiptail rsync unzip ca-certificates cifs-utils nfs-common git
 
 # ------------------------------------------------------------
 # 2. Media and ROM directories
@@ -88,6 +88,19 @@ if [ "$RP2_KODI" == "yes" ]; then
     rm -f /boot/firmware/firstrun.sh /boot/firmware/userconf.txt || true
 
     mkdir -p "/home/$RP2_USER/.kodi/userdata"
+
+    # Put the updater in Kodi's Favourites. A script addon otherwise only
+    # shows up under Add-ons > Program add-ons, which is a lot of clicks
+    # from the sofa; most skins surface Favourites on the home screen.
+    FAV="/home/$RP2_USER/.kodi/userdata/favourites.xml"
+    if [ ! -f "$FAV" ]; then
+        cat > "$FAV" <<'EOF'
+<favourites>
+    <favourite name="Update Retro Pi 2.0">RunScript(script.retropi2.update)</favourite>
+</favourites>
+EOF
+    fi
+
     chown -R "$RP2_USER":"$RP2_USER" "/home/$RP2_USER/.kodi"
 fi
 
@@ -149,6 +162,7 @@ if [ "$RP2_ADDONS" == "yes" ]; then
     echo "[retropi2] Installing first-boot downloaders"
     chmod +x /usr/local/bin/retropi2-install-addons
     chmod +x /usr/local/bin/retropi2-install-cores
+    chmod +x /usr/local/bin/retropi2-update
     # The unit runs as pi, so it needs to own its state directory.
     mkdir -p /var/lib/retropi2
     chown "$RP2_USER":"$RP2_USER" /var/lib/retropi2
