@@ -428,6 +428,149 @@ def finish(con):
         % (added, attached))
 
 
+ALL_GAMES = 'All Games'
+SKIN = 'skin.arctic.horizon.2'
+SS_DIR = os.path.join(HOME, '.kodi/userdata/addon_data/script.skinshortcuts')
+
+
+def build_all_games(con):
+    """One collection holding every console, so search covers everything.
+
+    AKL's search is per-collection: with only per-console collections you can
+    never search the whole library at once. A collection carrying one ruleset
+    per source -- each with no rules, so RuleSet.applies_to() is True for
+    every ROM -- holds the lot.
+
+    Launchers stay on the sources, never on this collection, or a ROM would
+    resolve two launchers and AKL would ask which to use on every launch.
+    """
+    read, write = con.cursor(), con.cursor()
+    row = read.execute('SELECT id FROM romcollections WHERE name=?',
+                       (ALL_GAMES,)).fetchone()
+    if row:
+        coll_id = row[0]
+    else:
+        coll_id, meta_id = sid(), sid()
+        write.execute(
+            'INSERT INTO metadata (id,year,genre,developer,rating,plot,'
+            'extra,finished) VALUES (?,?,?,?,?,?,?,?)',
+            (meta_id, '', '', '', None,
+             'Every game on this box, from every console.', '{}', 0))
+        write.execute(
+            'INSERT INTO romcollections (id,name,parent_id,metadata_id,'
+            'platform,box_size) VALUES (?,?,?,?,?,?)',
+            (coll_id, ALL_GAMES, None, meta_id, '', 'poster'))
+
+    have = set(r[0] for r in read.execute(
+        'SELECT source_id FROM collection_source_ruleset WHERE collection_id=?',
+        (coll_id,)).fetchall())
+    for src_id, in read.execute('SELECT id FROM sources').fetchall():
+        if src_id not in have:
+            write.execute(
+                'INSERT INTO collection_source_ruleset '
+                '(ruleset_id,source_id,collection_id,set_operator) '
+                'VALUES (?,?,?,?)', (sid(), src_id, coll_id, 1))
+
+    n = write.execute(
+        'INSERT INTO roms_in_romcollection (rom_id, romcollection_id) '
+        'SELECT r.id, ? FROM roms r WHERE r.scanned_by_id IN '
+        '  (SELECT source_id FROM collection_source_ruleset '
+        '   WHERE collection_id=?) '
+        '  AND NOT EXISTS (SELECT 1 FROM roms_in_romcollection x '
+        '                  WHERE x.rom_id=r.id AND x.romcollection_id=?)',
+        (coll_id, coll_id, coll_id)).rowcount
+    con.commit()
+    total = read.execute(
+        'SELECT count(*) FROM roms_in_romcollection WHERE romcollection_id=?',
+        (coll_id,)).fetchone()[0]
+    log('  %s: %d games (%d new)' % (ALL_GAMES, total, max(n, 0)))
+    return coll_id
+
+
+def _slug(text):
+    """skinshortcuts' own slugify, near enough for the names we generate."""
+    import re
+    text = re.sub(r"[']", '', text.lower())
+    return re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+
+
+def configure_menu(con, all_games_id):
+    """Point the skin's Games item at All Games and give it a row per console.
+
+    Arctic Horizon 2 builds its home rows with script.skinshortcuts. The rows
+    under a menu item come from a sub-level group, and the file is named after
+    the item's *path* -- not its label -- slugified, with "-1" for the level.
+    Get that name wrong and the rows silently never appear (hasSubmenu stays
+    False in the generated includes).
+    """
+    import xml.etree.ElementTree as ET
+
+    menu = os.path.join(SS_DIR, '%s-mainmenu.DATA.xml' % SKIN)
+    if not os.path.exists(menu):
+        log('  no custom main menu; skipping rows')
+        return
+
+    target = '%s/collection/%s' % (AKL, all_games_id)
+    action = 'ActivateWindow(programs,"%s",return)' % target
+
+    tree = ET.parse(menu)
+    for sc in tree.getroot().findall('shortcut'):
+        if (sc.findtext('defaultID') or '') == 'games':
+            sc.find('action').text = action
+            break
+    else:
+        log('  no Games item in the main menu; skipping rows')
+        return
+    tree.write(menu, encoding='utf-8', xml_declaration=True)
+
+    read = con.cursor()
+    consoles = [(name, cid) for name, cid, n in [
+        (r[0], r[1], read.execute(
+            'SELECT count(*) FROM roms_in_romcollection WHERE '
+            'romcollection_id=?', (r[1],)).fetchone()[0])
+        for r in read.execute('SELECT name,id FROM romcollections '
+                              'ORDER BY name').fetchall()]
+        if name != ALL_GAMES and n >= 2]
+
+    rows = [('Recently played', '%s/collection/virtual/recently_played' % AKL)]
+    rows += [(name, '%s/collection/%s' % (AKL, cid)) for name, cid in consoles]
+
+    root = ET.Element('shortcuts')
+    for label, path in rows:
+        sc = ET.SubElement(root, 'shortcut')
+        ET.SubElement(sc, 'label').text = label
+        ET.SubElement(sc, 'label2')
+        ET.SubElement(sc, 'icon')
+        ET.SubElement(sc, 'thumb')
+        ET.SubElement(sc, 'action').text = \
+            'ActivateWindow(programs,"%s",return)' % path
+
+    group = _slug(target.replace('plugin://', ''))
+    dest = os.path.join(SS_DIR, '%s-%s-1.DATA.xml' % (SKIN, group))
+    ET.ElementTree(root).write(dest, encoding='utf-8', xml_declaration=True)
+
+    props_file = os.path.join(SS_DIR, '%s.properties' % SKIN)
+    props = []
+    if os.path.exists(props_file):
+        try:
+            props = json.load(open(props_file))
+        except Exception:
+            props = []
+    props = [p for p in props if p[0] != '%s.1' % group]
+    for label, _path in rows:
+        lid = _slug(label)
+        props.append(['%s.1' % group, lid, 'widgetTarget', 'programs'])
+        props.append(['%s.1' % group, lid, 'widgetAspect', 'Poster'])
+    json.dump(props, open(props_file, 'w'), indent=4)
+
+    # Make skinshortcuts rebuild the menu from these files on next start.
+    for f in os.listdir(SS_DIR):
+        if f.endswith('.hash'):
+            os.remove(os.path.join(SS_DIR, f))
+
+    log('  Games opens %s, with %d rows' % (ALL_GAMES, len(rows)))
+
+
 def report(con):
     cur = con.cursor()
     log()
@@ -483,6 +626,11 @@ def main():
         log()
         log("== finishing ==")
         finish(con)
+
+    log()
+    log("== menu ==")
+    all_games_id = build_all_games(con)
+    configure_menu(con, all_games_id)
 
     report(con)
     con.close()

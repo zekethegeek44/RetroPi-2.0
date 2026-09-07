@@ -34,9 +34,12 @@ if [ "$RP2_KODI" == "yes" ]; then
     # /usr/bin/kodi-standalone, and kodi-bin links against libgbm and
     # libdrm, so Kodi selects GBM by itself when no X or Wayland is
     # running. Verified against the Trixie package index.
+    # kodi-inputstream-adaptive is a binary add-on, so it comes from Debian
+    # rather than the Kodi add-on repo (that repo 404s for it). YouTube and
+    # most other streaming add-ons will not play anything without it.
     apt-get install -y --no-install-recommends \
         kodi kodi-bin kodi-data kodi-repository-kodi \
-        kodi-eventclients-kodi-send
+        kodi-eventclients-kodi-send kodi-inputstream-adaptive
 fi
 
 if [ "$RP2_RETROARCH" == "yes" ]; then

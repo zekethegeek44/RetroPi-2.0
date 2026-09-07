@@ -580,6 +580,13 @@ def main():
     # Games and media.
     results["pil_shim"] = ensure_pil_shim()
     results["akl"] = install_akl(index)
+
+    # YouTube. Note this will not play anything until the owner adds their
+    # own Google API key in the add-on's settings -- since 2019 there are no
+    # working shared keys, and the add-on just logs "Request skipped: API key
+    # not provided". Installed anyway so the menu entry works and the setup
+    # is a couple of screens rather than a whole install.
+    results["youtube"] = install_official("plugin.video.youtube", index)
     results["jellyfin"] = install_jellyfin(index)
 
     # Upstream ships at least one addon whose folder name does not match

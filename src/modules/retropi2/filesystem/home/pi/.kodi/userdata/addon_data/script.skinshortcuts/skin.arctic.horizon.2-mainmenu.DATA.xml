@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version='1.0' encoding='utf-8'?>
 <shortcuts>
     <shortcut>
         <label>342</label>
@@ -20,7 +20,7 @@
         <defaultID>games</defaultID>
         <icon>special://skin/extras/icons/gamepad.png</icon>
         <thumb />
-        <action>ActivateWindow(programs,&quot;plugin://plugin.program.akl/&quot;,return)</action>
+        <action>ActivateWindow(programs,"plugin://plugin.program.akl/",return)</action>
     </shortcut>
     <shortcut>
         <label>2</label>
@@ -29,7 +29,7 @@
         <icon>special://skin/extras/icons/songs.png</icon>
         <action>ActivateWindow(Music)</action>
     </shortcut>
-    <shortcut>
+    <shortcut><label>YouTube</label><label2>Custom Shortcut</label2><defaultID>youtube</defaultID><icon>special://skin/extras/icons/circle-play.png</icon><thumb /><action>ActivateWindow(videos,"plugin://plugin.video.youtube/",return)</action></shortcut><shortcut>
         <label>31085</label>
         <label2>Common Shortcut</label2>
         <defaultID>livetv</defaultID>
