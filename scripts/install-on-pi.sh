@@ -8,9 +8,10 @@
 #
 #  Requires: Raspberry Pi OS Trixie (Debian 13), 64-bit, on a Pi 4.
 #
-#  Run it on the Pi:
-#      git clone https://github.com/zekethegeek44/RetroPi-2.0.git
-#      cd RetroPi-2.0
+#  Run it on the Pi, one line, nothing to download first:
+#      curl -sSL https://raw.githubusercontent.com/zekethegeek44/RetroPi-2.0/main/install | sudo bash
+#
+#  Or from a checkout:
 #      sudo bash scripts/install-on-pi.sh
 #
 #  Safe to re-run. Existing configs are backed up as *.retropi2.bak
@@ -18,7 +19,32 @@
 # ============================================================
 set -uo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_URL="${RP2_REPO_URL:-https://github.com/zekethegeek44/RetroPi-2.0.git}"
+
+# Work out where the project files are. When this script is piped
+# straight from the web (curl ... | sudo bash) there is no repo on disk
+# yet, so fetch one. That is what makes the one-line install work
+# without cloning anything by hand first.
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+else
+    REPO_DIR=""
+fi
+if [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR/src/modules/retropi2" ]; then
+    echo "==> Fetching Retro Pi 2.0"
+    command -v git >/dev/null 2>&1 || {
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git
+    }
+    REPO_DIR="/opt/retropi2/repo"
+    mkdir -p "$(dirname "$REPO_DIR")"
+    if [ -d "$REPO_DIR/.git" ]; then
+        git -C "$REPO_DIR" fetch --depth 1 -q origin main &&         git -C "$REPO_DIR" reset --hard -q origin/main
+    else
+        rm -rf "$REPO_DIR"
+        git clone --depth 1 -q "$REPO_URL" "$REPO_DIR"
+    fi
+fi
 FSROOT="$REPO_DIR/src/modules/retropi2/filesystem/root"
 FSHOME="$REPO_DIR/src/modules/retropi2/filesystem/home/pi"
 BOOTDIR="/boot/firmware"

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# ============================================================
+#  Retro Pi 2.0 -- one-line installer.
+#
+#  On the Pi:
+#      curl -sSL https://raw.githubusercontent.com/zekethegeek44/RetroPi-2.0/main/install | sudo bash
+#
+#  Turns a stock Raspberry Pi OS install into Retro Pi 2.0: Kodi as the
+#  shell, RetroArch for games, file sharing, and updates over WiFi.
+#  No reflashing, and your user account is kept.
+#
+#  This is only a bootstrap -- it fetches the project and hands over to
+#  scripts/install-on-pi.sh, so there is only ever one copy of the real
+#  installer to keep correct.
+# ============================================================
+set -euo pipefail
+
+REPO_URL="${RP2_REPO_URL:-https://github.com/zekethegeek44/RetroPi-2.0.git}"
+REPO_DIR="/opt/retropi2/repo"
+
+[ "$(id -u)" -eq 0 ] || {
+    echo "Run this with sudo:" >&2
+    echo "  curl -sSL .../install | sudo bash" >&2
+    exit 1
+}
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "==> Installing git"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq git
+fi
+
+echo "==> Fetching Retro Pi 2.0"
+mkdir -p "$(dirname "$REPO_DIR")"
+if [ -d "$REPO_DIR/.git" ]; then
+    git -C "$REPO_DIR" fetch --depth 1 -q origin main
+    git -C "$REPO_DIR" reset --hard -q origin/main
+else
+    rm -rf "$REPO_DIR"
+    git clone --depth 1 -q "$REPO_URL" "$REPO_DIR"
+fi
+
+# Keep the invoking user, so the installer sets things up for the right
+# account rather than defaulting to "pi".
+exec env RP2_USER="${RP2_USER:-${SUDO_USER:-pi}}" \
+    bash "$REPO_DIR/scripts/install-on-pi.sh" "$@"

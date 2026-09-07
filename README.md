@@ -22,6 +22,26 @@ behind it so games launch from the same place as everything else.
 
 ---
 
+## Two ways to install
+
+**Already have a Raspberry Pi OS install?** One line on the Pi, nothing to
+download first:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/zekethegeek44/RetroPi-2.0/main/install | sudo bash
+```
+
+That converts a stock Raspberry Pi OS Trixie (64-bit) install in place: Kodi as
+the shell, RetroArch, sharing, updates. **Your user account is kept** — the
+installer reads it from `$SUDO_USER` and records it in `/etc/retropi2/user`, so
+nothing assumes the account is called `pi`. Safe to re-run; existing configs are
+backed up as `*.retropi2.bak`.
+
+**Starting from a blank card?** Build the image below and flash it. It does the
+same thing unattended on first boot — no SSH, no terminal.
+
+---
+
 ## Building the image
 
 You need **Docker Desktop** running.
