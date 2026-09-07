@@ -56,7 +56,8 @@ apt-get install -y --no-install-recommends \
     whiptail rsync unzip ca-certificates cifs-utils nfs-common git \
     samba samba-common-bin avahi-daemon \
     bluez bluez-tools \
-    cec-utils udisks2 exfatprogs ntfs-3g
+    cec-utils udisks2 exfatprogs ntfs-3g \
+    python3-pil
 
 # ------------------------------------------------------------
 # 2. Media and ROM directories

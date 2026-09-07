@@ -98,6 +98,7 @@ apt-get install -y --no-install-recommends \
     samba samba-common-bin avahi-daemon \
     bluez bluez-tools \
     cec-utils udisks2 exfatprogs ntfs-3g \
+    python3-pil \
     || warn "some optional packages failed"
 
 # ---- 2. remember which user this is ---------------------------

@@ -103,6 +103,81 @@ def extract_zip(data, addon_id, strip_root=False):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def reconcile_addon_dir(addon_id):
+    """Make the directory name match the addon's declared id.
+
+    Kodi identifies an addon by its directory name and refuses to load
+    one whose addon.xml declares a different id. At least one upstream
+    repo ships a mismatch (resource.font.robotcjksc on disk declaring
+    resource.font.robotocjksc), which silently breaks anything that
+    depends on it.
+    """
+    if os.path.isdir(os.path.join(ADDONS, addon_id)):
+        return True
+    if not os.path.isdir(ADDONS):
+        return False
+    for name in os.listdir(ADDONS):
+        xml = os.path.join(ADDONS, name, "addon.xml")
+        if not os.path.isfile(xml):
+            continue
+        try:
+            declared = ET.parse(xml).getroot().get("id")
+        except ET.ParseError:
+            continue
+        if declared == addon_id:
+            src = os.path.join(ADDONS, name)
+            dst = os.path.join(ADDONS, addon_id)
+            log("  renaming %s -> %s (directory did not match addon id)"
+                % (name, addon_id))
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.move(src, dst)
+            return True
+    return False
+
+
+def ensure_pil_shim():
+    """Satisfy script.module.pil, which no Kodi repository carries.
+
+    plugin.video.themoviedb.helper -- which the skin needs -- lists
+    script.module.pil as a hard requirement, but it is not in the
+    official repo. Debian ships the actual library as python3-pil and it
+    is already importable, so a small shim addon satisfies Kodi's
+    dependency check without bundling a copy of Pillow.
+    """
+    aid = "script.module.pil"
+    path = os.path.join(ADDONS, aid)
+    if os.path.isdir(path):
+        return True
+    try:
+        import PIL  # noqa: F401 -- only checking it exists system-wide
+    except ImportError:
+        log("! system python3-pil is missing; install it with:")
+        log("    sudo apt-get install -y python3-pil")
+        return False
+
+    os.makedirs(os.path.join(path, "lib"), exist_ok=True)
+    xml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<addon id="script.module.pil" name="pil" version="1.1.7"',
+        '       provider-name="system">',
+        '    <requires>',
+        '        <import addon="xbmc.python" version="3.0.0"/>',
+        '    </requires>',
+        '    <extension point="xbmc.python.module" library="lib"/>',
+        '    <extension point="xbmc.addon.metadata">',
+        '        <summary lang="en_GB">Pillow, provided by the system</summary>',
+        '        <description lang="en_GB">Shim for the system python3-pil',
+        'package, which supplies PIL. Kodi has no repository copy.</description>',
+        '        <platform>linux</platform>',
+        '        <license>MIT</license>',
+        '    </extension>',
+        '</addon>',
+    ]
+    with open(os.path.join(path, "addon.xml"), "w", encoding="utf-8") as f:
+        f.write(chr(10).join(xml) + chr(10))
+    log("+ %s (shim over system python3-pil)" % aid)
+    return True
+
 def addon_requires(addon_id):
     """Dependency ids declared in an installed addon's addon.xml."""
     path = os.path.join(ADDONS, addon_id, "addon.xml")
@@ -217,8 +292,18 @@ def install_akl(index):
         log("! AKL install failed: %s" % exc)
         ok = False
 
-    ok = install_github("chrisism/script.akl.retroarchlauncher", "master",
-                        "script.akl.retroarchlauncher", index) and ok
+    # Use the release asset rather than a branch: the default branch is
+    # "main", and a source archive is not a packaged Kodi addon anyway.
+    try:
+        url = latest_github_zip("chrisism/script.akl.retroarchlauncher")
+        if url:
+            ok = install_url(url, "script.akl.retroarchlauncher", index) and ok
+        else:
+            log("! no zip asset on the latest AKL RetroArch launcher release")
+            ok = False
+    except Exception as exc:
+        log("! AKL RetroArch launcher failed: %s" % exc)
+        ok = False
     return ok
 
 
@@ -301,8 +386,15 @@ def main():
         "jurialmunkey/skin.arctic.horizon.2", "omega", SKIN_ID, index)
 
     # Games and media.
+    results["pil_shim"] = ensure_pil_shim()
     results["akl"] = install_akl(index)
     results["jellyfin"] = install_jellyfin(index)
+
+    # Upstream ships at least one addon whose folder name does not match
+    # its declared id; fix those before deciding whether the skin is usable.
+    for aid in ("resource.font.robotocjksc", "script.texturemaker",
+                SKIN_ID, "plugin.video.themoviedb.helper"):
+        reconcile_addon_dir(aid)
 
     if results.get("skin") and already_installed(SKIN_ID):
         set_skin(SKIN_ID)
