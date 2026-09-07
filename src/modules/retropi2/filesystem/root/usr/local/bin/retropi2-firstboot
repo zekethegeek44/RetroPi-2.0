@@ -8,7 +8,7 @@
 
 MARKER="/boot/firmware/retropi2-firstboot-done"
 TITLE="Retro Pi 2.0 - First Time Setup"
-USER_NAME="pi"
+USER_NAME="$(cat /etc/retropi2/user 2>/dev/null || echo pi)"
 MEDIA_DIR="/home/$USER_NAME/media"
 ROMS_DIR="/home/$USER_NAME/roms"
 

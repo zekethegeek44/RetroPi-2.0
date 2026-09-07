@@ -29,7 +29,9 @@ REPO_URL="${RP2_REPO_URL:-https://github.com/zekethegeek44/RetroPi-2.0.git}"
 REPO_DIR="/opt/retropi2/repo"
 LOG="/var/log/retropi2-update.log"
 RESTART_FLAG="/run/retropi2-restart-needed"
-USER_NAME="pi"
+# The account Kodi and the games run as. Written by the image build or
+# by scripts/install-on-pi.sh -- not everyone's user is called "pi".
+USER_NAME="$(cat /etc/retropi2/user 2>/dev/null || echo pi)"
 
 DO_SYSTEM=0; DO_SCRIPTS=0; DO_CORES=0; DO_ADDONS=0
 FULL_UPGRADE=0
