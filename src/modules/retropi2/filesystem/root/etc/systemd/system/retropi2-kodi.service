@@ -1,6 +1,9 @@
 [Unit]
 Description=Kodi Media Center (GBM, no desktop)
 After=systemd-user-sessions.service network-online.target sound.target retropi2-addons.service
+# Take the console over from the login prompt rather than fighting it.
+Conflicts=getty@tty1.service
+After=getty@tty1.service
 Wants=network-online.target
 
 [Service]
@@ -14,8 +17,11 @@ Environment=HOME=/home/pi
 ExecStart=/usr/bin/kodi-standalone
 Restart=on-failure
 RestartSec=5
-TTYPath=/dev/tty1
-StandardInput=tty
+# Deliberately NOT bound to a tty. getty owns tty1 for the login prompt,
+# and asking for it here makes kodi-standalone hang at startup with the
+# service still reporting "active". Kodi on GBM renders straight to the
+# GPU and reads input via evdev, so it needs no controlling terminal.
+StandardInput=null
 StandardOutput=journal
 StandardError=journal
 
