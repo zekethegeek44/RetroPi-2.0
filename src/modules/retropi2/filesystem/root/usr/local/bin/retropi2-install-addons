@@ -477,6 +477,63 @@ def patch_akl_retroarch_launcher():
     return True
 
 
+def patch_akl_view_assets():
+    """Publish a game's box art as poster/thumb, not just boxfront.
+
+    AKL fills the "poster" slot from whatever poster is mapped to, and its
+    built-in default for poster is *flyer* -- something ROMs never have -- so
+    ListItem.Art(poster) comes out empty. Skins draw their poster walls from
+    poster and thumb, so every game rendered as a blank placeholder with the
+    box art sitting unused under art.boxfront.
+
+    Mapping poster->boxfront per collection does not help: that mapping lives
+    on the collection and never reaches the ROM objects the view renders. So
+    fill the slots where the view data is built instead.
+    """
+    path = os.path.join(ADDONS, "plugin.program.akl",
+                        "resources", "lib", "domain.py")
+    if not os.path.exists(path):
+        return False
+
+    old = ("            view_assets[asset_info.fname_infix] = value\n"
+           "        return view_assets\n")
+    new = (
+        "            view_assets[asset_info.fname_infix] = value\n"
+        "\n"
+        "        # Retro Pi 2.0: a game's cover lives in \"boxfront\", but AKL\n"
+        "        # defaults the poster slot to \"flyer\", which ROMs never have.\n"
+        "        # Skins draw poster walls from poster/thumb, so fall back to\n"
+        "        # the box art instead of leaving them empty.\n"
+        "        boxfront_path = ''\n"
+        "        if constants.ASSET_BOXFRONT_ID in self.assets:\n"
+        "            boxfront_path = "
+        "self.assets[constants.ASSET_BOXFRONT_ID].get_path()\n"
+        "        if boxfront_path:\n"
+        "            for slot in ('poster', 'thumb'):\n"
+        "                if not view_assets.get(slot):\n"
+        "                    view_assets[slot] = boxfront_path\n"
+        "\n"
+        "        return view_assets\n")
+
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError as exc:
+        log("! could not read AKL domain.py: %s" % exc)
+        return False
+
+    if "Retro Pi 2.0: a game's cover" in text:
+        return True
+    if text.count(old) != 1:
+        log("! AKL get_view_assets has changed; skipping the poster fix")
+        return False
+
+    with open(path, "w") as fh:
+        fh.write(text.replace(old, new))
+    log("  patched AKL to publish box art as poster/thumb")
+    return True
+
+
 def install_akl(index):
     """Advanced Kodi Launcher -- games with artwork, launched via RetroArch."""
     ok = True
@@ -496,6 +553,7 @@ def install_akl(index):
 
     patch_akl_for_python313()
     patch_akl_retroarch_launcher()
+    patch_akl_view_assets()
     return ok
 
 
