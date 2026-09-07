@@ -1,0 +1,494 @@
+#!/usr/bin/env python3
+# ============================================================
+#  Retro Pi 2.0 -- set up the games library
+#
+#  Run this after copying ROMs into ~/roms/<system>/. It does, without
+#  asking anything:
+#
+#    1. builds an Advanced Kodi Launcher source, RetroArch launcher and
+#       collection for every console that actually has ROMs
+#    2. downloads box art, title screens and gameplay shots
+#    3. runs AKL's scanner over each source
+#    4. files the ROMs into their collections and attaches the artwork
+#
+#  Doing this by hand means roughly seven wizard questions per console,
+#  with a remote, on a TV. Safe to re-run: consoles already set up are
+#  left alone and only missing artwork is fetched.
+#
+#  Usage:
+#      retropi2-setup-games            everything
+#      retropi2-setup-games --no-art   skip the artwork download
+#      retropi2-setup-games --art-only just fetch missing artwork
+# ============================================================
+import base64
+import json
+import os
+import sqlite3
+import string
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+
+HOME = os.path.expanduser("~")
+DB = os.path.join(HOME, ".kodi/userdata/addon_data/plugin.program.akl/akl.db")
+ROMS = os.path.join(HOME, "roms")
+MEDIA = os.path.join(HOME, "roms-media")
+CORES = os.path.join(HOME, ".config/retroarch/cores")
+RA_CFG = os.path.join(HOME, ".config/retroarch/retroarch.cfg")
+RETROARCH = "/usr/bin/retroarch"
+AKL_LIB = os.path.join(HOME, ".kodi/addons/script.module.akl/lib")
+
+KODI_RPC = "http://localhost:8080/jsonrpc"
+KODI_AUTH = base64.b64encode(b"kodi:retropi2").decode()
+
+OBJ_SOURCE = 42506
+THUMBS = "https://thumbnails.libretro.com"
+
+# rom folder -> (shown as, AKL platform, libretro core, extensions,
+#                libretro thumbnail system)
+SYSTEMS = [
+    ("nes", "Nintendo Entertainment System", "Nintendo NES",
+     "fceumm_libretro.so", "nes|unf|unif",
+     "Nintendo - Nintendo Entertainment System"),
+    ("snes", "Super Nintendo", "Nintendo SNES",
+     "snes9x_libretro.so", "sfc|smc|swc|fig",
+     "Nintendo - Super Nintendo Entertainment System"),
+    ("megadrive", "Sega Genesis", "Sega Mega Drive",
+     "genesis_plus_gx_libretro.so", "md|gen|smd|bin",
+     "Sega - Mega Drive - Genesis"),
+    ("genesis", "Sega Genesis", "Sega Mega Drive",
+     "genesis_plus_gx_libretro.so", "md|gen|smd|bin",
+     "Sega - Mega Drive - Genesis"),
+    ("mastersystem", "Master System", "Sega Master System",
+     "genesis_plus_gx_libretro.so", "sms|bin",
+     "Sega - Master System - Mark III"),
+    ("gamegear", "Game Gear", "Sega Game Gear",
+     "genesis_plus_gx_libretro.so", "gg|bin",
+     "Sega - Game Gear"),
+    ("atari2600", "Atari 2600", "Atari 2600",
+     "stella_libretro.so", "a26|bin", "Atari - 2600"),
+    ("atari5200", "Atari 5200", "Atari 5200",
+     "atari800_libretro.so", "a52|bin|xex|atr", "Atari - 5200"),
+    ("atari7800", "Atari 7800", "Atari 7800",
+     "prosystem_libretro.so", "a78", "Atari - 7800"),
+    ("gb", "Game Boy", "Nintendo GameBoy",
+     "gambatte_libretro.so", "gb", "Nintendo - Game Boy"),
+    ("gbc", "Game Boy Color", "Nintendo GameBoy Color",
+     "gambatte_libretro.so", "gbc|gb", "Nintendo - Game Boy Color"),
+    ("gba", "Game Boy Advance", "Nintendo GameBoy Advance",
+     "mgba_libretro.so", "gba", "Nintendo - Game Boy Advance"),
+    ("n64", "Nintendo 64", "Nintendo 64",
+     "parallel_n64_libretro.so", "z64|n64|v64", "Nintendo - Nintendo 64"),
+    ("psx", "PlayStation", "Sony PlayStation",
+     "pcsx_rearmed_libretro.so", "cue|chd|pbp|m3u",
+     "Sony - PlayStation"),
+]
+
+# AKL asset id -> folder name (AssetInfo.plural.lower()) -> libretro set
+ASSETS = (
+    ("boxfront", "boxfronts", "Named_Boxarts"),
+    ("snap", "snaps", "Named_Snaps"),
+    ("title", "titles", "Named_Titles"),
+)
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp")
+SKIP_EXT = {".srm", ".sav", ".state", ".png", ".jpg", ".txt", ".xml", ".dat"}
+
+
+def log(msg=""):
+    print(msg, flush=True)
+
+
+def sid():
+    return uuid.uuid4().hex
+
+
+def akl_name(stem):
+    """Mirror akl.utils.text.str_to_filename_str: these are dropped."""
+    strip = '"*/:<>?|' + chr(92)
+    s = "".join(c if c in string.printable else "_" for c in stem)
+    return "".join(c for c in s if c not in strip)
+
+
+def libretro_name(stem):
+    """libretro's own substitution: these become underscores."""
+    subst = '&*/:`<>?|"' + chr(92)
+    return "".join("_" if c in subst else c for c in stem)
+
+
+def rom_files(folder):
+    if not os.path.isdir(folder):
+        return []
+    out = []
+    for f in sorted(os.listdir(folder)):
+        p = os.path.join(folder, f)
+        if os.path.isfile(p) and os.path.splitext(f)[1].lower() not in SKIP_EXT:
+            out.append(f)
+    return out
+
+
+def rpc(method, params):
+    body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                       "method": method, "params": params}).encode()
+    req = urllib.request.Request(
+        KODI_RPC, data=body,
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Basic " + KODI_AUTH})
+    return json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+
+
+# ------------------------------------------------------------------
+#  1. sources, launchers, collections
+# ------------------------------------------------------------------
+def resolve_platform(name):
+    """Match AKL's own platform list so box art is the right shape."""
+    sys.path.insert(0, AKL_LIB)
+    try:
+        from akl import platforms as P
+    except Exception:
+        return name, "poster"
+    for p in P.AKL_platforms:
+        if p.long_name == name:
+            return p.long_name, p.default_box_size or "poster"
+    log("  ! unknown AKL platform %r, using defaults" % name)
+    return name, "poster"
+
+
+def configure(con):
+    cur = con.cursor()
+    addons = {}
+    for r in cur.execute("SELECT id, addon_id, addon_type, name FROM akl_addon"):
+        addons[(r[1], r[2], r[3])] = r[0]
+
+    try:
+        scanner_addon = addons[("script.akl.defaults", "SCANNER",
+                                "Folder scanner")]
+        launcher_addon = addons[("script.akl.retroarchlauncher", "LAUNCHER",
+                                 "Retroarch")]
+    except KeyError:
+        log("! AKL has not registered its plugins yet -- start Kodi once first")
+        return []
+
+    active = []
+    for folder, label, platform, core, exts, _thumbs in SYSTEMS:
+        rompath = os.path.join(ROMS, folder)
+        files = rom_files(rompath)
+        if not files:
+            continue
+        corepath = os.path.join(CORES, core)
+        if not os.path.exists(corepath):
+            log("  skip %-13s no core (%s)" % (folder, core))
+            continue
+
+        row = cur.execute("SELECT id FROM sources WHERE name=?",
+                          (label,)).fetchone()
+        if row:
+            active.append((folder, label, row[0]))
+            log("  keep %-13s %5d roms (already set up)" % (folder, len(files)))
+            continue
+
+        plat_name, box = resolve_platform(platform)
+        source_id = sid()
+        assets_root = os.path.join(MEDIA, folder)
+        cur.execute(
+            "INSERT INTO sources (id,name,platform,box_size,assets_path,"
+            "last_scan_timestamp,settings,akl_addon_id) VALUES (?,?,?,?,?,?,?,?)",
+            (source_id, label, plat_name, box, assets_root + "/", None,
+             json.dumps({"rompath": rompath + "/", "romext": exts,
+                         "scan_recursive": False, "multidisc": False,
+                         "ignore_bios": True, "secname": rompath + "/"}),
+             scanner_addon))
+
+        for asset_type, sub, _set in ASSETS:
+            p = os.path.join(assets_root, sub)
+            os.makedirs(p, exist_ok=True)
+            ap = sid()
+            cur.execute("INSERT INTO assetpaths (id,path,asset_type) "
+                        "VALUES (?,?,?)", (ap, p + "/", asset_type))
+            cur.execute("INSERT INTO source_assetpaths (source_id,assetpaths_id)"
+                        " VALUES (?,?)", (source_id, ap))
+
+        launcher_id = sid()
+        cur.execute(
+            "INSERT INTO launchers (id,name,akl_addon_id,settings) "
+            "VALUES (?,?,?,?)",
+            (launcher_id, "Retroarch", launcher_addon,
+             json.dumps({"application": RETROARCH,
+                         "retro_core": corepath,
+                         "retro_core_info": corepath.replace(".so", ".info"),
+                         "retro_config": RA_CFG, "args": "",
+                         "secname": core.replace("_libretro.so", "")})))
+        cur.execute("INSERT INTO source_launchers (launcher_id,source_id,"
+                    "is_default) VALUES (?,?,?)", (launcher_id, source_id, 1))
+
+        meta_id, coll_id = sid(), sid()
+        cur.execute("INSERT INTO metadata (id,year,genre,developer,rating,"
+                    "plot,extra,finished) VALUES (?,?,?,?,?,?,?,?)",
+                    (meta_id, "", "", "", None, "%s games" % label, "{}", 0))
+        cur.execute("INSERT INTO romcollections (id,name,parent_id,metadata_id,"
+                    "platform,box_size) VALUES (?,?,?,?,?,?)",
+                    (coll_id, label, None, meta_id, plat_name, box))
+        # A ruleset with no rules takes everything the source finds.
+        cur.execute("INSERT INTO collection_source_ruleset (ruleset_id,"
+                    "source_id,collection_id,set_operator) VALUES (?,?,?,?)",
+                    (sid(), source_id, coll_id, 1))
+        cur.execute("INSERT INTO romcollection_launchers (launcher_id,"
+                    "romcollection_id,is_default) VALUES (?,?,?)",
+                    (launcher_id, coll_id, 1))
+
+        active.append((folder, label, source_id))
+        log("  made %-13s %5d roms  %s" % (folder, len(files), core))
+
+    con.commit()
+    return active
+
+
+# ------------------------------------------------------------------
+#  2. artwork
+# ------------------------------------------------------------------
+def fetch_art(active):
+    """Grab thumbnails from libretro: static files, no API key, no rate limit.
+
+    Saved under AKL's filename rules rather than libretro's, because the two
+    sanitise ROM names differently and the local scraper matches on AKL's.
+    """
+    thumbs = dict((s[0], s[5]) for s in SYSTEMS)
+    jobs = []
+    for folder, _label, _sid in active:
+        libsys = thumbs.get(folder)
+        if not libsys:
+            continue
+        for entry in rom_files(os.path.join(ROMS, folder)):
+            stem = os.path.splitext(entry)[0]
+            for _atype, sub, kind in ASSETS:
+                dest_dir = os.path.join(MEDIA, folder, sub)
+                dest = os.path.join(dest_dir, akl_name(stem) + ".png")
+                if os.path.exists(dest) and os.path.getsize(dest) > 0:
+                    continue
+                jobs.append((
+                    "%s/%s/%s/%s.png" % (
+                        THUMBS, urllib.parse.quote(libsys), kind,
+                        urllib.parse.quote(libretro_name(stem))),
+                    dest, dest_dir))
+
+    if not jobs:
+        log("  artwork already complete")
+        return
+    log("  fetching up to %d images..." % len(jobs))
+
+    def one(job):
+        url, dest, dest_dir = job
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "RetroPi2/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+            if not data:
+                return "miss"
+            tmp = dest + ".part"
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, dest)
+            return "hit"
+        except urllib.error.HTTPError as e:
+            return "miss" if e.code == 404 else "error"
+        except Exception:
+            return "error"
+
+    hit = miss = err = 0
+    done = 0
+    with ThreadPoolExecutor(max_workers=24) as pool:
+        for res in pool.map(one, jobs):
+            done += 1
+            if res == "hit":
+                hit += 1
+            elif res == "miss":
+                miss += 1
+            else:
+                err += 1
+            if done % 500 == 0:
+                log("    %d/%d" % (done, len(jobs)))
+    log("  artwork: %d found, %d not available, %d failed" % (hit, miss, err))
+
+
+# ------------------------------------------------------------------
+#  3. scan
+# ------------------------------------------------------------------
+def scan(con, active):
+    cur = con.cursor()
+    for folder, label, source_id in active:
+        want = len(rom_files(os.path.join(ROMS, folder)))
+        have = cur.execute("SELECT count(*) FROM roms WHERE scanned_by_id=?",
+                           (source_id,)).fetchone()[0]
+        if have >= want:
+            log("  %-13s already scanned (%d)" % (label, have))
+            continue
+        log("  %-13s scanning %d..." % (label, want))
+        try:
+            rpc("Addons.ExecuteAddon",
+                {"addonid": "script.akl.defaults",
+                 "params": ["--cmd", "scan", "--type", "SCANNER",
+                            "--server_host", "127.0.0.1",
+                            "--server_port", "5738",
+                            "--akl_addon_id", source_id,
+                            "--entity_type", str(OBJ_SOURCE),
+                            "--entity_id", source_id]})
+        except Exception as exc:
+            log("  ! could not start scan for %s: %s" % (label, exc))
+            continue
+
+        # Kodi runs the scanner asynchronously; watch the count settle.
+        last, stable, waited = -1, 0, 0
+        while waited < 1800:
+            time.sleep(10)
+            waited += 10
+            now = cur.execute("SELECT count(*) FROM roms WHERE scanned_by_id=?",
+                              (source_id,)).fetchone()[0]
+            stable = stable + 1 if now == last else 0
+            last = now
+            if now >= want and stable >= 2:
+                break
+            if stable >= 12:
+                break
+        log("    found %d" % last)
+
+
+# ------------------------------------------------------------------
+#  4. collections + artwork wiring
+# ------------------------------------------------------------------
+def finish(con):
+    cur = con.cursor()
+
+    added = 0
+    for coll_id, source_id in cur.execute(
+            "SELECT collection_id, source_id FROM collection_source_ruleset "
+            "WHERE source_id IS NOT NULL").fetchall():
+        n = cur.execute(
+            "INSERT INTO roms_in_romcollection (rom_id, romcollection_id) "
+            "SELECT r.id, ? FROM roms r WHERE r.scanned_by_id = ? "
+            "  AND NOT EXISTS (SELECT 1 FROM roms_in_romcollection x "
+            "  WHERE x.rom_id = r.id AND x.romcollection_id = ?)",
+            (coll_id, source_id, coll_id)).rowcount
+        added += max(n, 0)
+
+    folders = {}
+    for src_id, path, atype in cur.execute(
+            "SELECT sap.source_id, ap.path, ap.asset_type FROM source_assetpaths"
+            " sap JOIN assetpaths ap ON ap.id = sap.assetpaths_id"):
+        folders.setdefault(src_id, {})[atype] = path.rstrip("/")
+
+    have = set()
+    for rom_id, atype in cur.execute(
+            "SELECT ra.rom_id, a.asset_type FROM rom_assets ra "
+            "JOIN assets a ON a.id = ra.asset_id"):
+        have.add((rom_id, atype))
+
+    ident = dict(cur.execute(
+        "SELECT rom_id, data_value FROM scanned_roms_data "
+        "WHERE data_key='identifier'").fetchall())
+
+    listing = {}
+
+    def find(folder, stem):
+        if folder not in listing:
+            try:
+                listing[folder] = set(os.listdir(folder))
+            except OSError:
+                listing[folder] = set()
+        for ext in IMAGE_EXTS:
+            if stem + ext in listing[folder]:
+                return os.path.join(folder, stem + ext)
+        return None
+
+    attached = 0
+    for rom_id, name, src_id in cur.execute(
+            "SELECT id, name, scanned_by_id FROM roms "
+            "WHERE scanned_by_id IS NOT NULL").fetchall():
+        stem = ident.get(rom_id) or name
+        for atype, folder in folders.get(src_id, {}).items():
+            if (rom_id, atype) in have:
+                continue
+            hit = find(folder, stem)
+            if not hit:
+                continue
+            a_id = sid()
+            cur.execute("INSERT INTO assets (id, filepath, asset_type) "
+                        "VALUES (?,?,?)", (a_id, hit, atype))
+            cur.execute("INSERT INTO rom_assets (rom_id, asset_id) "
+                        "VALUES (?,?)", (rom_id, a_id))
+            attached += 1
+
+    con.commit()
+    log("  filed %d games into collections, attached %d images"
+        % (added, attached))
+
+
+def report(con):
+    cur = con.cursor()
+    log()
+    log("%-32s %7s %7s" % ("CONSOLE", "GAMES", "BOX ART"))
+    for name, cid in cur.execute(
+            "SELECT name, id FROM romcollections ORDER BY name").fetchall():
+        n = cur.execute("SELECT count(*) FROM roms_in_romcollection "
+                        "WHERE romcollection_id=?", (cid,)).fetchone()[0]
+        art = cur.execute(
+            "SELECT count(DISTINCT ra.rom_id) FROM rom_assets ra "
+            "JOIN assets a ON a.id=ra.asset_id "
+            "JOIN roms_in_romcollection x ON x.rom_id=ra.rom_id "
+            "WHERE x.romcollection_id=? AND a.asset_type='boxfront'",
+            (cid,)).fetchone()[0]
+        log("%-32s %7d %7d" % (name, n, art))
+    log()
+    log("%-32s %7d" % ("TOTAL",
+                       cur.execute("SELECT count(*) FROM roms").fetchone()[0]))
+
+
+def main():
+    args = sys.argv[1:]
+    want_art = "--no-art" not in args
+    art_only = "--art-only" in args
+
+    if not os.path.exists(DB):
+        sys.exit("Advanced Kodi Launcher has not been started yet.\n"
+                 "Open Kodi once, then run this again.")
+    if not os.path.isdir(ROMS):
+        sys.exit("No ROMs folder at %s" % ROMS)
+
+    con = sqlite3.connect(DB)
+
+    log("== consoles ==")
+    active = configure(con)
+    if not active:
+        con.close()
+        sys.exit("\nNo ROMs found. Copy games into %s/<console>/ first." % ROMS)
+
+    if want_art:
+        log()
+        log("== artwork ==")
+        fetch_art(active)
+
+    if not art_only:
+        log()
+        log("== scanning ==")
+        scan(con, active)
+        log()
+        log("== finishing ==")
+        finish(con)
+    else:
+        log()
+        log("== finishing ==")
+        finish(con)
+
+    report(con)
+    con.close()
+    log()
+    log("Done. Open Kodi > Add-ons > Advanced Kodi Launcher to see your games.")
+
+
+if __name__ == "__main__":
+    main()

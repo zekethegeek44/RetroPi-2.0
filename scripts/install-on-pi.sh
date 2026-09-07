@@ -145,6 +145,20 @@ say "Configuring Kodi to run as the shell"
 usermod -aG video,render,input,audio,tty,dialout,plugdev "$RP2_USER"
 systemctl set-default multi-user.target
 
+# Kodi on GBM holds DRM master on /dev/dri/card*, so RetroArch cannot put
+# anything on screen while Kodi is running. Launching a game means handing it
+# to retropi2-game.service, which conflicts with Kodi and so replaces it for
+# the duration. Kodi has no terminal to type a password into, so that one
+# start has to be passwordless. Scoped to these exact commands.
+cat > /etc/sudoers.d/retropi2-game <<SUDOERS
+$RP2_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block retropi2-game.service, /usr/bin/systemctl stop retropi2-game.service, /usr/bin/systemctl start retropi2-kodi.service
+SUDOERS
+chmod 0440 /etc/sudoers.d/retropi2-game
+visudo -cf /etc/sudoers.d/retropi2-game >/dev/null || {
+    rm -f /etc/sudoers.d/retropi2-game
+    say "! sudoers rule rejected; games will not be able to restart Kodi"
+}
+
 KODI_HOME="$USER_HOME/.kodi"
 mkdir -p "$KODI_HOME/userdata" "$KODI_HOME/addons"
 
@@ -176,6 +190,18 @@ fi
 
 if [ -d "$FSHOME/.kodi/addons/script.retropi2.update" ]; then
     cp -a "$FSHOME/.kodi/addons/script.retropi2.update" "$KODI_HOME/addons/"
+fi
+
+# Put Games in the skin's main menu, next to Movies and TV. Arctic Horizon 2
+# builds its menu with script.skinshortcuts and sets doNotShareMenu, so the
+# file has to be named "<skin id>-<menu>.DATA.xml" -- a plain mainmenu.DATA.xml
+# is ignored. Deleting the hash makes skinshortcuts rebuild from it on start.
+SS_SRC="$FSHOME/.kodi/userdata/addon_data/script.skinshortcuts"
+SS_DST="$KODI_HOME/userdata/addon_data/script.skinshortcuts"
+if [ -d "$SS_SRC" ] && [ ! -f "$SS_DST/skin.arctic.horizon.2-mainmenu.DATA.xml" ]; then
+    mkdir -p "$SS_DST"
+    cp -a "$SS_SRC/." "$SS_DST/"
+    rm -f "$SS_DST"/*.hash
 fi
 chown -R "$RP2_USER":"$RP2_USER" "$KODI_HOME"
 

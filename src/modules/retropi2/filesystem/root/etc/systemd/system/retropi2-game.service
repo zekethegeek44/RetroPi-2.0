@@ -1,0 +1,34 @@
+[Unit]
+# A game session, running instead of Kodi for as long as it lasts.
+#
+# Kodi on GBM holds DRM master on /dev/dri/card*, so RetroArch cannot put a
+# picture on screen while Kodi is up -- it dies with
+#   Fatal error received in: "video_driver_init_internal()"
+#
+# Conflicts= is what makes this work: starting this unit makes systemd stop
+# Kodi first, and ExecStopPost brings it back when the game ends. It has to
+# be a separate unit rather than a script Kodi spawns, because Kodi's service
+# uses KillMode=control-group -- anything Kodi started, even detached with
+# setsid, gets killed the moment Kodi stops.
+Description=Retro Pi 2.0 game session
+Conflicts=retropi2-kodi.service
+After=retropi2-kodi.service
+ConditionPathExists=/var/lib/retropi2/game.args
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+Environment=HOME=/home/pi
+# GBM needs the GPU; controllers need evdev.
+SupplementaryGroups=video render input audio tty dialout plugdev
+TTYPath=/dev/tty1
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/local/bin/retropi2-play
+# However the game ends -- quit, crash, or kill -- go back to Kodi.
+# "+" runs this as root regardless of User= above.
+ExecStopPost=+/usr/bin/systemctl start --no-block retropi2-kodi.service
+TimeoutStopSec=20
+Restart=no

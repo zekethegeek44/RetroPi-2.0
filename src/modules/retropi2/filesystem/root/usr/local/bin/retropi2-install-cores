@@ -41,6 +41,8 @@ CORES = [
     ("PlayStation",     "pcsx_rearmed"),
     ("Nintendo DS",     "desmume"),
     ("Atari 2600",      "stella"),
+    ("Atari 5200/800",  "atari800"),
+    ("Atari 7800",      "prosystem"),
     ("Arcade (MAME)",   "mame2003_plus"),
     ("Arcade (FBNeo)",  "fbneo"),
     ("PSP",             "ppsspp"),

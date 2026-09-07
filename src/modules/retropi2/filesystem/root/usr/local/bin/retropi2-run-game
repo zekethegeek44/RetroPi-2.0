@@ -1,0 +1,35 @@
+#!/bin/bash
+# ============================================================
+#  Retro Pi 2.0 -- hand a game over to its own session
+#
+#  Advanced Kodi Launcher runs this in place of retroarch, with exactly
+#  the arguments it would have passed to retroarch.
+#
+#  It cannot simply run the game itself. Kodi holds DRM master on GBM, so
+#  Kodi has to stop first -- and Kodi's service uses KillMode=control-group,
+#  which kills everything Kodi spawned the moment it does, setsid or not.
+#  So the arguments are handed to retropi2-game.service, which lives outside
+#  Kodi's cgroup and declares Conflicts=retropi2-kodi.service: systemd stops
+#  Kodi, plays the game, and starts Kodi again afterwards.
+#
+#  Returns immediately so Kodi can finish recording the launch.
+# ============================================================
+set -u
+
+STATE_DIR="/var/lib/retropi2"
+ARGS_FILE="$STATE_DIR/game.args"
+UNIT="retropi2-game.service"
+
+[ "$#" -gt 0 ] || { echo "usage: retropi2-run-game <retroarch args...>" >&2; exit 2; }
+
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# One argument per line, so ROM paths containing spaces come back intact.
+if ! printf '%s\n' "$@" > "$ARGS_FILE"; then
+    echo "retropi2-run-game: cannot write $ARGS_FILE" >&2
+    exit 1
+fi
+
+# --no-block: systemd queues the job, so it still runs even though this
+# process is about to be killed along with Kodi.
+exec sudo -n /usr/bin/systemctl start --no-block "$UNIT"

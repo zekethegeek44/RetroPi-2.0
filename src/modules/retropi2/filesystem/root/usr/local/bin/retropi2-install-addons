@@ -278,32 +278,224 @@ def latest_github_zip(repo):
     return None
 
 
+# AKL is split across four add-ons and only works with all of them:
+#   plugin.program.akl            the launcher itself
+#   script.module.akl             the shared library every other piece imports
+#   script.akl.defaults           the folder scanner and local-files scraper
+#   script.akl.retroarchlauncher  runs the ROMs through RetroArch
+# Miss script.module.akl and AKL loads but dies with "No module named 'akl'";
+# miss script.akl.defaults and it has no way to find ROMs at all.
+AKL_ADDONS = (
+    "plugin.program.akl",
+    "script.module.akl",
+    "script.akl.defaults",
+    "script.akl.retroarchlauncher",
+)
+
+# distutils went away in Python 3.12 (PEP 632) and Kodi 21 on Trixie runs
+# 3.13, but AKL 1.5.3 still imports distutils.version.LooseVersion in three
+# files. Without this the add-on cannot even be imported.
+AKL_DISTUTILS_USERS = (
+    "resources/lib/repositories.py",
+    "resources/lib/services.py",
+    "resources/lib/commands/misc_commands.py",
+)
+
+VERSIONCOMPAT = '''\
+# -*- coding: utf-8 -*-
+#
+# Stand-in for distutils.version.LooseVersion, removed in Python 3.12.
+# Installed by Retro Pi 2.0; see AKL_DISTUTILS_USERS in retropi2-install-addons.
+#
+# Keeps distutils' parsing rules -- split into runs of digits and letters,
+# drop the dots, make the digit runs ints -- so version ordering and AKL's
+# database migration ordering behave exactly as AKL expects.
+import re
+
+_component_re = re.compile(r'(\\d+ | [a-z]+ | \\.)', re.VERBOSE)
+
+
+class LooseVersion:
+
+    def __init__(self, vstring=None):
+        self.vstring = ''
+        self.version = []
+        if vstring:
+            self.parse(str(vstring))
+
+    def parse(self, vstring):
+        self.vstring = vstring
+        parts = [x for x in _component_re.split(vstring) if x and x != '.']
+        for i, obj in enumerate(parts):
+            try:
+                parts[i] = int(obj)
+            except ValueError:
+                pass
+        self.version = parts
+
+    def __str__(self):
+        return self.vstring
+
+    def __repr__(self):
+        return "LooseVersion ('%s')" % str(self)
+
+    # Ints sort before strings, rather than the TypeError distutils raised.
+    @staticmethod
+    def _key(version):
+        return [(0, v, '') if isinstance(v, int) else (1, 0, v)
+                for v in version]
+
+    def _cmp(self, other):
+        if isinstance(other, str):
+            other = LooseVersion(other)
+        elif not isinstance(other, LooseVersion):
+            return NotImplemented
+        a, b = self._key(self.version), self._key(other.version)
+        if a == b:
+            return 0
+        return -1 if a < b else 1
+
+    def __eq__(self, other):
+        c = self._cmp(other)
+        return NotImplemented if c is NotImplemented else c == 0
+
+    def __lt__(self, other):
+        c = self._cmp(other)
+        return NotImplemented if c is NotImplemented else c < 0
+
+    def __le__(self, other):
+        c = self._cmp(other)
+        return NotImplemented if c is NotImplemented else c <= 0
+
+    def __gt__(self, other):
+        c = self._cmp(other)
+        return NotImplemented if c is NotImplemented else c > 0
+
+    def __ge__(self, other):
+        c = self._cmp(other)
+        return NotImplemented if c is NotImplemented else c >= 0
+
+    def __hash__(self):
+        return hash(tuple(self._key(self.version)))
+'''
+
+
+def patch_akl_for_python313():
+    """Swap AKL's distutils import for a shim it ships alongside.
+
+    Vendored into the add-on rather than dropped on sys.path as a fake
+    top-level "distutils", so nothing else running inside Kodi is affected.
+    Re-applied after every upgrade, since an AKL update restores the
+    original imports.
+    """
+    akl = os.path.join(ADDONS, "plugin.program.akl")
+    if not os.path.isdir(akl):
+        return False
+
+    shim = os.path.join(akl, "resources", "lib", "_versioncompat.py")
+    try:
+        with open(shim, "w") as fh:
+            fh.write(VERSIONCOMPAT)
+    except OSError as exc:
+        log("! could not write AKL version shim: %s" % exc)
+        return False
+
+    old = "from distutils.version import LooseVersion"
+    new = "from resources.lib._versioncompat import LooseVersion"
+    patched = 0
+    for rel in AKL_DISTUTILS_USERS:
+        path = os.path.join(akl, rel)
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        if old in text:
+            with open(path, "w") as fh:
+                fh.write(text.replace(old, new))
+            patched += 1
+
+    # Stale .pyc files still hold the old import.
+    for root, dirs, _files in os.walk(akl):
+        for d in list(dirs):
+            if d == "__pycache__":
+                shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                dirs.remove(d)
+
+    log("  patched %d AKL file(s) for Python 3.13" % patched)
+    return True
+
+
+def patch_akl_retroarch_launcher():
+    """Fix get_application() returning a FileName instead of a str on Linux.
+
+    script.akl.retroarchlauncher's Windows branch returns app.getPath() but
+    the Linux one returns the FileName object, and the base class then does
+    string .replace() on it:
+
+        AttributeError: 'FileName' object has no attribute 'replace'
+
+    Every launch fails without this. Re-applied after each upgrade.
+    """
+    path = os.path.join(ADDONS, "script.akl.retroarchlauncher",
+                        "resources", "lib", "launcher.py")
+    if not os.path.exists(path):
+        return False
+
+    old = ("        if io.is_linux():\n"
+           "            app = io.FileName(self.launcher_settings['application'])\n"
+           "            return app\n")
+    new = ("        if io.is_linux():\n"
+           "            app = io.FileName(self.launcher_settings['application'])\n"
+           "            # Must be a str: the base class runs .replace() on it.\n"
+           "            return app.getPath()\n")
+
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError as exc:
+        log("! could not read RetroArch launcher: %s" % exc)
+        return False
+
+    if new in text:
+        return True
+    if old not in text:
+        log("! RetroArch launcher has changed; skipping Linux path fix")
+        return False
+
+    with open(path, "w") as fh:
+        fh.write(text.replace(old, new))
+
+    for root, dirs, _files in os.walk(
+            os.path.join(ADDONS, "script.akl.retroarchlauncher")):
+        for d in list(dirs):
+            if d == "__pycache__":
+                shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                dirs.remove(d)
+
+    log("  patched RetroArch launcher for Linux")
+    return True
+
+
 def install_akl(index):
     """Advanced Kodi Launcher -- games with artwork, launched via RetroArch."""
     ok = True
-    try:
-        url = latest_github_zip("chrisism/plugin.program.akl")
-        if url:
-            ok = install_url(url, "plugin.program.akl", index) and ok
-        else:
-            log("! no zip asset on the latest AKL release")
+    # Use release assets rather than branches: the default branch is "main",
+    # and a source archive is not a packaged Kodi addon anyway.
+    for repo in AKL_ADDONS:
+        try:
+            url = latest_github_zip("chrisism/" + repo)
+            if url:
+                ok = install_url(url, repo, index) and ok
+            else:
+                log("! no zip asset on the latest %s release" % repo)
+                ok = False
+        except Exception as exc:
+            log("! %s install failed: %s" % (repo, exc))
             ok = False
-    except Exception as exc:
-        log("! AKL install failed: %s" % exc)
-        ok = False
 
-    # Use the release asset rather than a branch: the default branch is
-    # "main", and a source archive is not a packaged Kodi addon anyway.
-    try:
-        url = latest_github_zip("chrisism/script.akl.retroarchlauncher")
-        if url:
-            ok = install_url(url, "script.akl.retroarchlauncher", index) and ok
-        else:
-            log("! no zip asset on the latest AKL RetroArch launcher release")
-            ok = False
-    except Exception as exc:
-        log("! AKL RetroArch launcher failed: %s" % exc)
-        ok = False
+    patch_akl_for_python313()
+    patch_akl_retroarch_launcher()
     return ok
 
 

@@ -1,0 +1,36 @@
+#!/bin/bash
+# ============================================================
+#  Retro Pi 2.0 -- the game session itself
+#
+#  Started by retropi2-game.service, never directly. Reads the RetroArch
+#  arguments that retropi2-run-game left behind (one per line, so paths
+#  with spaces survive) and hands over to RetroArch.
+# ============================================================
+set -u
+
+ARGS_FILE="/var/lib/retropi2/game.args"
+
+[ -r "$ARGS_FILE" ] || {
+    echo "retropi2-play: no arguments at $ARGS_FILE" >&2
+    exit 1
+}
+
+mapfile -t ARGS < "$ARGS_FILE"
+[ "${#ARGS[@]}" -gt 0 ] || {
+    echo "retropi2-play: argument file is empty" >&2
+    exit 1
+}
+
+# A system service starts with almost no environment; RetroArch wants both
+# of these and fails in confusing ways without them.
+export HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    XDG_RUNTIME_DIR="/tmp/retropi2-runtime-$(id -u)"
+    export XDG_RUNTIME_DIR
+fi
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+echo "retropi2-play: retroarch ${ARGS[*]}"
+exec /usr/bin/retroarch "${ARGS[@]}"

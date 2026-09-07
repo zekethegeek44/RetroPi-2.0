@@ -228,6 +228,30 @@ if [ "$RP2_ADDONS" == "yes" ]; then
 fi
 
 # ------------------------------------------------------------
+# 5b. Launching games
+# ------------------------------------------------------------
+# Kodi on GBM holds DRM master on /dev/dri/card*, so RetroArch cannot draw
+# anything while Kodi runs. Games are handed to retropi2-game.service, which
+# conflicts with Kodi and therefore replaces it for as long as the game lasts.
+# It has to be its own unit: Kodi's service uses KillMode=control-group, so
+# anything Kodi spawns dies the instant Kodi stops, setsid or not.
+echo "[retropi2] Installing the game launcher"
+chmod +x /usr/local/bin/retropi2-run-game
+chmod +x /usr/local/bin/retropi2-play
+chmod +x /usr/local/bin/retropi2-setup-games
+
+# Kodi has no terminal to type a sudo password into, so the one command it
+# needs is passwordless. Scoped to exactly these.
+cat > /etc/sudoers.d/retropi2-game <<SUDOERS
+$RP2_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block retropi2-game.service, /usr/bin/systemctl stop retropi2-game.service, /usr/bin/systemctl start retropi2-kodi.service
+SUDOERS
+chmod 0440 /etc/sudoers.d/retropi2-game
+visudo -cf /etc/sudoers.d/retropi2-game >/dev/null || rm -f /etc/sudoers.d/retropi2-game
+
+# Deliberately not enabled: it is started on demand, one game at a time.
+systemctl daemon-reload 2>/dev/null || true
+
+# ------------------------------------------------------------
 # 6. Cleanup
 # ------------------------------------------------------------
 rm -f "/home/$RP2_USER/.gitkeep" /boot/firmware/.gitkeep /.gitkeep
