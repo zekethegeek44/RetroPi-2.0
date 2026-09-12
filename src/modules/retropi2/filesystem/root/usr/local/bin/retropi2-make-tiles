@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""
+Draw the app tiles for the Apps launcher.
+
+Each app gets three images rather than one, because Kodi picks a layout per
+view and a single aspect ratio always ends up stretched somewhere:
+
+  <app>-poster.png   2:3 portrait, for poster/panel views (what Bingie uses)
+  <app>.png          16:9, for thumb and landscape views
+  <app>-fanart.jpg   full screen, so the background changes along the row
+
+YouTube reuses the real logo out of plugin.video.youtube -- instantly
+recognisable in a way anything I draw would not be.
+"""
+import os
+
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+OUT = os.path.expanduser('~/.kodi/userdata/media/retropi2-apps')
+YT_ICON = os.path.expanduser('~/.kodi/addons/plugin.video.youtube/icon.png')
+
+WIDE = (640, 360)
+POSTER = (600, 900)
+FAN = (1920, 1080)
+
+FONTS = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+    '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+]
+
+
+def font(size):
+    for f in FONTS:
+        if os.path.exists(f):
+            return ImageFont.truetype(f, size)
+    return ImageFont.load_default()
+
+
+def gradient(size, top, bottom):
+    """Vertical gradient, drawn one pixel wide and scaled up."""
+    w, h = size
+    strip = Image.new('RGB', (1, h))
+    px = strip.load()
+    for y in range(h):
+        t = y / max(h - 1, 1)
+        px[0, y] = tuple(int(top[i] + (bottom[i] - top[i]) * t)
+                         for i in range(3))
+    return strip.resize(size, Image.BILINEAR)
+
+
+def rounded(img, radius):
+    mask = Image.new('L', img.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, img.size[0] - 1, img.size[1] - 1], radius=radius, fill=255)
+    out = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    out.paste(img, (0, 0), mask)
+    return out
+
+
+def label(img, text, size, y_frac):
+    d = ImageDraw.Draw(img)
+    f = font(size)
+    box = d.textbbox((0, 0), text, font=f)
+    x = (img.size[0] - (box[2] - box[0])) // 2
+    y = int(img.size[1] * y_frac)
+    d.text((x + 3, y + 3), text, font=f, fill=(0, 0, 0, 160))
+    d.text((x, y), text, font=f, fill=(255, 255, 255))
+
+
+def gamepad(d, cx, cy, w, colour, bg):
+    """A controller silhouette, so there is no icon font to depend on."""
+    h = w * 0.62
+    left, top = cx - w / 2, cy - h / 2
+    d.rounded_rectangle([left, top, left + w, top + h],
+                        radius=int(h * 0.42), fill=colour)
+    d.ellipse([left - w * 0.10, top + h * 0.10,
+               left + w * 0.42, top + h * 1.02], fill=colour)
+    d.ellipse([left + w * 0.58, top + h * 0.10,
+               left + w * 1.10, top + h * 1.02], fill=colour)
+    ax, ay = left + w * 0.26, cy
+    arm = w * 0.055
+    d.rectangle([ax - arm * 2.6, ay - arm, ax + arm * 2.6, ay + arm], fill=bg)
+    d.rectangle([ax - arm, ay - arm * 2.6, ax + arm, ay + arm * 2.6], fill=bg)
+    bx = left + w * 0.72
+    r = w * 0.045
+    for dx, dy in ((-r * 2.2, 0), (r * 2.2, 0), (0, -r * 2.2), (0, r * 2.2)):
+        d.ellipse([bx + dx - r, ay + dy - r, bx + dx + r, ay + dy + r], fill=bg)
+
+
+def youtube_mark(img, box_w, cy):
+    """Paste the real logo if we have it, else draw the play button."""
+    if os.path.exists(YT_ICON):
+        try:
+            logo = Image.open(YT_ICON).convert('RGBA')
+            logo.thumbnail((box_w, box_w), Image.LANCZOS)
+            img.alpha_composite(logo, ((img.size[0] - logo.size[0]) // 2,
+                                       int(cy) - logo.size[1] // 2))
+            return
+        except Exception as exc:
+            print('  could not use the YouTube icon: %s' % exc)
+    d = ImageDraw.Draw(img)
+    w = box_w
+    h = int(w * 0.70)
+    x, y = (img.size[0] - w) // 2, int(cy) - h // 2
+    d.rounded_rectangle([x, y, x + w, y + h], radius=int(h * 0.23),
+                        fill=(255, 0, 0))
+    d.polygon([(x + w * 0.40, y + h * 0.28), (x + w * 0.40, y + h * 0.72),
+               (x + w * 0.68, y + h * 0.50)], fill=(255, 255, 255))
+
+
+def build(name, top, bottom, draw_mark, wide_font):
+    bg = (int(bottom[0]), int(bottom[1]), int(bottom[2]))
+
+    wide = gradient(WIDE, top, bottom).convert('RGBA')
+    draw_mark(wide, int(WIDE[0] * 0.34), WIDE[1] * 0.38, bg)
+    label(wide, name, wide_font, 0.66)
+    rounded(wide, 26).save(os.path.join(OUT, '%s.png' % name.lower()))
+
+    # No text baked into the poster: the skin draws the name underneath it,
+    # and having both looked like a mistake. Just the mark, larger for it.
+    post = gradient(POSTER, top, bottom).convert('RGBA')
+    draw_mark(post, int(POSTER[0] * 0.78), POSTER[1] * 0.5, bg)
+    rounded(post, 30).save(os.path.join(OUT, '%s-poster.png' % name.lower()))
+
+    fan = gradient(FAN, tuple(int(c * 0.75) for c in top),
+                   (8, 8, 12)).convert('RGB')
+    fan.filter(ImageFilter.GaussianBlur(2)).save(
+        os.path.join(OUT, '%s-fanart.jpg' % name.lower()), quality=88)
+    print('%s: wide + poster + fanart' % name)
+
+
+
+# Console tiles for the games home. AKL gives every collection the same
+# generic controller icon, which makes nine consoles look like one thing
+# repeated; a colour and the name apiece makes the screen readable at a
+# glance. Colours are the obvious association for each machine.
+CONSOLES = [
+    ('All Games',                     (30, 34, 52),  (96, 165, 250)),
+    ('Nintendo Entertainment System', (74, 24, 28),  (229, 90, 80)),
+    ('Super Nintendo',                (44, 30, 74),  (150, 120, 235)),
+    ('Sega Genesis',                  (20, 34, 64),  (90, 150, 240)),
+    ('Atari 2600',                    (66, 34, 14),  (240, 150, 70)),
+    ('Atari 5200',                    (60, 30, 16),  (235, 140, 60)),
+    ('Atari 7800',                    (54, 26, 14),  (230, 130, 55)),
+    ('Game Boy Color',                (22, 52, 32),  (110, 210, 130)),
+    ('Nintendo 64',                   (52, 20, 52),  (215, 110, 215)),
+    ('Recently played',               (26, 30, 38),  (170, 190, 215)),
+    ('Favourites',                    (54, 44, 12),  (245, 205, 90)),
+]
+
+
+def slugify(text):
+    out = ''.join(c.lower() if c.isalnum() else '-' for c in text)
+    while '--' in out:
+        out = out.replace('--', '-')
+    return out.strip('-')
+
+
+def wrap(draw, text, f, max_w):
+    words, lines, cur = text.split(), [], ''
+    for w in words:
+        trial = (cur + ' ' + w).strip()
+        if draw.textbbox((0, 0), trial, font=f)[2] <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def console_tile(name, bg_top, accent):
+    slug = slugify(name)
+    bottom = (10, 11, 15)
+
+    for size, fname, fsize in ((POSTER, '%s-poster.png' % slug, 62),
+                               (WIDE, '%s.png' % slug, 46)):
+        img = gradient(size, bg_top, bottom).convert('RGBA')
+        d = ImageDraw.Draw(img)
+        # A bar of the console's colour, so the eye can sort them by hue.
+        bar_h = max(6, size[1] // 60)
+        d.rectangle([0, size[1] - bar_h, size[0], size[1]], fill=accent)
+
+        f = font(fsize)
+        lines = wrap(d, name, f, int(size[0] * 0.84))
+        line_h = int(fsize * 1.25)
+        y = (size[1] - line_h * len(lines)) // 2
+        for ln in lines:
+            box = d.textbbox((0, 0), ln, font=f)
+            x = (size[0] - (box[2] - box[0])) // 2
+            d.text((x + 2, y + 2), ln, font=f, fill=(0, 0, 0, 170))
+            d.text((x, y), ln, font=f, fill=(255, 255, 255))
+            y += line_h
+        rounded(img, 30 if size is POSTER else 26).save(
+            os.path.join(OUT, fname))
+
+    fan = gradient(FAN, tuple(int(c * 0.8) for c in bg_top),
+                   (8, 8, 12)).convert('RGB')
+    fan.filter(ImageFilter.GaussianBlur(2)).save(
+        os.path.join(OUT, '%s-fanart.jpg' % slug), quality=88)
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+
+    def games_mark(img, size, cy, bg):
+        gamepad(ImageDraw.Draw(img), img.size[0] // 2, cy, size,
+                (120, 190, 255), bg)
+
+    def yt_mark(img, size, cy, bg):
+        youtube_mark(img, size, cy)
+
+    build('Games', (34, 46, 82), (12, 14, 24), games_mark, 64)
+    build('YouTube', (58, 14, 16), (12, 10, 12), yt_mark, 58)
+
+    for name, bg, accent in CONSOLES:
+        console_tile(name, bg, accent)
+    print('%d console tiles' % len(CONSOLES))
+
+    print()
+    for f in sorted(os.listdir(OUT)):
+        p = os.path.join(OUT, f)
+        print('  %-26s %6.1f KB' % (f, os.path.getsize(p) / 1024))
+
+
+if __name__ == '__main__':
+    main()

@@ -109,7 +109,8 @@ echo "$RP2_USER" > /etc/retropi2/user
 # ---- 3. our scripts -------------------------------------------
 say "Installing scripts"
 for f in retropi2-firstboot retropi2-install-addons retropi2-install-cores \
-         retropi2-update retropi2-usb-mount; do
+         retropi2-update retropi2-usb-mount retropi2-setup-games \
+         retropi2-run-game retropi2-play retropi2-make-tiles; do
     if [ -f "$FSROOT/usr/local/bin/$f" ]; then
         install -m 0755 "$FSROOT/usr/local/bin/$f" "/usr/local/bin/$f"
         echo "    /usr/local/bin/$f"
@@ -192,6 +193,15 @@ if [ -d "$FSHOME/.kodi/addons/script.retropi2.update" ]; then
     cp -a "$FSHOME/.kodi/addons/script.retropi2.update" "$KODI_HOME/addons/"
 fi
 
+# The Apps launcher: one screen with Games and YouTube on it, and a games
+# home built from AKL's collections. It reads AKL's database directly rather
+# than linking to AKL's own root, which also lists Sources, Launchers,
+# Utilities and Global Reports -- configuration screens that do not belong
+# on a TV the whole house uses.
+if [ -d "$FSHOME/.kodi/addons/plugin.program.retropi2.apps" ]; then
+    cp -a "$FSHOME/.kodi/addons/plugin.program.retropi2.apps" "$KODI_HOME/addons/"
+fi
+
 # Put Games in the skin's main menu, next to Movies and TV. Arctic Horizon 2
 # builds its menu with script.skinshortcuts and sets doNotShareMenu, so the
 # file has to be named "<skin id>-<menu>.DATA.xml" -- a plain mainmenu.DATA.xml
@@ -267,6 +277,11 @@ sudo -u "$RP2_USER" HOME="$USER_HOME" /usr/local/bin/retropi2-install-addons \
     || warn "add-on install had problems -- Kodi will use the default skin"
 sudo -u "$RP2_USER" HOME="$USER_HOME" /usr/local/bin/retropi2-install-cores \
     || warn "core download had problems"
+
+# Tiles for the Apps launcher. Generated rather than shipped so the
+# YouTube one can reuse the real logo from the add-on just installed.
+sudo -u "$RP2_USER" HOME="$USER_HOME" /usr/local/bin/retropi2-make-tiles \
+    || warn "could not draw the app tiles"
 
 mkdir -p /var/lib/retropi2
 chown "$RP2_USER":"$RP2_USER" /var/lib/retropi2
